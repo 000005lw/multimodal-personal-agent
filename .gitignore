@@ -1,0 +1,30 @@
+# 运行数据（聊天记录 / 记忆库 / 日志 / 缓存）
+data/
+logs/
+*.log
+*.db
+*.jsonl
+
+# 配置与密钥
+.env
+.env.local
+.env.*.local
+!.env.example
+
+# 媒体与临时产物
+*.mp3
+*.wav
+*.png
+*.jpg
+*.pt
+*.onnx
+*.gguf
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# 运维私有笔记
+运维备忘.*

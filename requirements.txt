@@ -1,0 +1,5 @@
+aiohttp>=3.9
+# 可选：语音合成 / 图像生成 / 视频理解按需安装
+# onnxruntime>=1.16        # ZipVoice 零样本语音克隆
+# requests>=2.31          # 通义万相 / 阿里云 NLS
+# yt-dlp                  # 视频下载
