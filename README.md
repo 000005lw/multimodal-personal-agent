@@ -14,6 +14,7 @@
 python -m venv .venv && . .venv/bin/activate   # Windows: .venv\Scripts\activate
 pip install -r requirements.txt
 cp .env.example .env        # 填 DEEPSEEK_API_KEY / DASHSCOPE_API_KEY / ONEBOT_* / OWNER_QQ
+# 使用下面的 SnowLuma 容器时，设置 ONEBOT_API_BASE=http://127.0.0.1:3001
 docker run -d --name snowluma -p 127.0.0.1:3001:3001 \
   -e ONEBOT_ACCESS_TOKEN=<同 .env> motricseven7/snowluma:latest
 python selfcheck.py         # 159 项，离线，不花 token
@@ -51,12 +52,36 @@ sing.py           唱歌流水线（在家里电脑执行）
 songlib.py        曲库：已做好的切片缓存
 home_agent.py     家里电脑的 worker（领活/交活）
 selfcheck.py      离线自测（159 项）
-````
+```
+
+## Agent 工具运行时
+
+模型动作会先由 `action_protocol.py` 转成结构化请求，再由
+`action_runtime.py` 做身份权限校验、执行分发和脱敏 trace。
+
+为保证向后兼容，新运行时默认关闭：
+
+```env
+ACTIONS_V2=false
+```
+
+当前接入的三个工具：
+
+- `songlist`：仅主人私聊
+- `introspect`：仅主人私聊
+- `sticker`：主人私聊、朋友私聊
+
+测试和 canary 时可设置为 `ACTIONS_V2=true`。未注册动作仍走原业务路径，
+不会绕过已有的好感度、禁发表情包和隐私检查。
 
 ## 依赖
 
-必需只有 `aiohttp`。可选：`httpx`（embedding）、`numpy`（向量）、
-`librosa`+`torch`+`demucs`（仅家里电脑唱歌用）。
+核心必需依赖为 `aiohttp` 和 `numpy`，由 `requirements.txt` 安装。
+
+可选依赖：
+
+- `httpx`：百炼真实 embedding；缺失时退化为哈希向量
+- `librosa` + `torch` + `demucs`：仅家里电脑唱歌流水线
 
 ## 许可
 
