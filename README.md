@@ -48,7 +48,7 @@ sing.py           唱歌流水线（在家里电脑执行）
 songlib.py        曲库：已做好的切片缓存
 home_agent.py     家里电脑的 worker（领活/交活）
 selfcheck.py      离线自测（123 项）
-```
+````
 
 ## 依赖
 
