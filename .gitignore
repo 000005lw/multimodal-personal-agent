@@ -6,7 +6,9 @@
 *.key
 
 # 真实数据（聊天记录 / 记忆 / 联系人 / 音频）
-data/
+# 注意：必须写 data/*，不能写 data/ ——
+# 目录整体被排除后，Git 不会再去恢复里面的单个文件
+data/*
 !data/README.md
 !data/.gitkeep
 
