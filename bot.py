@@ -23,6 +23,8 @@ from collections import deque
 from aiohttp import web
 
 import config
+import action_protocol
+import action_runtime
 import llm
 import evolve
 import emotion
@@ -73,18 +75,13 @@ _CLEANERS = [
 
 _SENTENCE_END = "。！？!?…~.\n；;"
 
-# 模型用这个标记请求发表情包，写成 [[贴图:开心]] 或 [[表情:无语]]
-_STICKER_RE = re.compile(r"\[\[(?:贴图|表情)[:：]\s*([^\[\]]{1,12})\]\]")
-# 模型用这个标记请求上网查，写成 [[搜索:关键词]]
-_SEARCH_RE = re.compile(r"\[\[搜索[:：]\s*([^\[\]]{1,40})\]\]")
-# 模型用这个标记表示"主人想看图，把截帧发给他"
-_SHOT_RE = re.compile(r"\[\[截图\]\]")
-# 模型用这个标记请求画图，写成 [[画:一只在吃米饭的小鲸鱼]]
-_DRAW_RE = re.compile(r"\[\[画[:：]\s*([^\[\]]{1,120})\]\]")
-# 模型用这个标记请求网上找图，写成 [[找图:蓝色小鲸鱼壁纸]]
-_FINDIMG_RE = re.compile(r"\[\[找图[:：]\s*([^\[\]]{1,40})\]\]")
-# 模型用这个标记请求唱歌，写成 [[唱:起风了]]
-_SING_RE = re.compile(r"\[\[唱[:：]\s*([^\[\]]{1,40})\]\]")
+# Keep the historical names as aliases for tests and third-party imports.
+_STICKER_RE = action_protocol.STICKER_RE
+_SEARCH_RE = action_protocol.SEARCH_RE
+_SHOT_RE = action_protocol.SCREENSHOT_RE
+_DRAW_RE = action_protocol.DRAW_RE
+_FINDIMG_RE = action_protocol.FIND_IMAGE_RE
+_SING_RE = action_protocol.SONG_RE
 # 主人话里出现这些，就认为是要她唱一首
 _SING_HINTS = (
     "唱一首", "唱个", "唱一下", "来一首", "给我唱", "你唱", "唱首", "来首", "会唱",
@@ -109,11 +106,16 @@ def _qq_of(cid: str) -> int:
 
 
 def is_owner(cid: str) -> bool:
-    return _qq_of(cid) in config.OWNER_QQS
+    return str(cid).startswith("u") and _qq_of(cid) in config.OWNER_QQS
+
+
+def is_owner_private(cid: str, mtype: str | None) -> bool:
+    """Only the owner's private chat may use private introspection tools."""
+    return mtype == "private" and is_owner(cid)
 
 
 def is_friend(cid: str) -> bool:
-    return _qq_of(cid) in config.FRIEND_QQS
+    return str(cid).startswith("u") and _qq_of(cid) in config.FRIEND_QQS
 
 
 def wants_frames(text: str) -> bool:
@@ -317,7 +319,7 @@ _WATCH_HINTS = (
 )
 
 # 模型自己判断"主人在让我去看视频"时写这个标记
-_WATCH_RE = re.compile(r"\[\[看片\]\]")
+_WATCH_RE = action_protocol.WATCH_RE
 
 
 def wants_watch_video(text: str) -> bool:
@@ -351,6 +353,18 @@ def _group_lines(text: str, per: int = 3) -> list[str]:
     """把多行报告按 N 行合成一条消息，别一行刷一条。"""
     raw = [ln.strip() for ln in (text or "").split("\n") if ln.strip()]
     return ["\n".join(raw[i : i + per]) for i in range(0, len(raw), per)]
+
+
+def _first_action(actions: list[dict], kind: str) -> dict | None:
+    return next((item for item in actions if item.get("kind") == kind), None)
+
+
+def _action_args(actions: list[dict], kind: str) -> list[str]:
+    return [
+        str(item.get("arg") or "")
+        for item in actions
+        if item.get("kind") == kind
+    ]
 
 
 def strip_last_period(text: str) -> str:
@@ -387,13 +401,7 @@ def strip_markers(text: str) -> str:
     搜索成功后会再调一次模型复述结果，那一次它常常又写一遍标记，
     所以每个出口都要过一遍这个函数，不能只在第一次清理。
     """
-    for pattern in (
-        _SEARCH_RE, _DRAW_RE, _FINDIMG_RE, _STICKER_RE, _SHOT_RE, _WATCH_RE,
-        _SING_RE, _VOICE_RE, _SONGLIST_RE, _INTROSPECT_RE,
-    ):
-        text = pattern.sub("", text)
-    lines = [ln.strip() for ln in text.split("\n") if ln.strip()]
-    return "\n".join(lines).strip()
+    return action_protocol.strip_action_markers(text)
 
 
 def clean_output(text: str) -> str:
@@ -403,14 +411,10 @@ def clean_output(text: str) -> str:
     return text.strip()
 
 
-# 模型用这个标记表示"这句想用声音说出来"，写成 [[语音]]
-_VOICE_RE = re.compile(r"\[\[语音\]\]")
-
-# 模型用这个标记表示"我要把曲库全清单报出来"，写成 [[歌单]]
-_SONGLIST_RE = re.compile(r"\[\[歌单\]\]")
-
-# 模型用这个标记表示"我要查服务器里的东西"，写成 [[查:歌单]] / [[查:说说]]
-_INTROSPECT_RE = re.compile(r"\[\[查[:：]\s*([^\[\]]{1,20})\]\]")
+# Historical aliases retained for callers and selfcheck coverage.
+_VOICE_RE = action_protocol.VOICE_RE
+_SONGLIST_RE = action_protocol.SONGLIST_RE
+_INTROSPECT_RE = action_protocol.INTROSPECT_RE
 
 # 跟朋友说话时绝对不能出现的词（出现了就重写，再不行就删句）
 _FRIEND_LEAK_RE = re.compile(r"爸爸|主人|你爸")
@@ -672,6 +676,12 @@ class WhaleBot:
         self._last_qr_mail = 0.0
         self._load_state()
         self._tasks: set[asyncio.Task] = set()
+        trace_path = (
+            config.DATA_DIR / config.ACTION_TRACE_FILE
+            if config.ACTION_TRACE_ENABLED
+            else None
+        )
+        self.action_runtime = action_runtime.ActionRuntime(trace_path)
 
     # ---------- 小工具 ----------
     def _remember_seen(self, key) -> bool:
@@ -1247,7 +1257,7 @@ class WhaleBot:
                 pass
 
     async def send(self, mtype, user_id, group_id, text, quote_id=None):
-        await self.send_segments(
+        return await self.send_segments(
             mtype, user_id, group_id, onebot.text_message(text, quote_id)
         )
 
@@ -1276,6 +1286,168 @@ class WhaleBot:
 
         log.error("[%s] 语音怎么都发不出去，退回文字", cid)
         await self.send(mtype, uid, group_id, text)
+
+    def _action_context(self, cid, mtype, uid, group_id, synthetic: bool) -> dict:
+        return {
+            "cid": cid,
+            "message_type": mtype,
+            "user_id": uid,
+            "group_id": group_id,
+            "is_group": str(cid).startswith("g") or mtype == "group",
+            "is_owner": is_owner_private(cid, mtype),
+            "is_friend": is_friend(cid),
+            "synthetic": bool(synthetic),
+        }
+
+    async def _deliver_songlist(
+        self, cid, mtype, uid, group_id, user_text: str
+    ) -> dict:
+        try:
+            all_songs = songlib.names()
+        except Exception:
+            all_songs = []
+        delivered = True
+        if not all_songs:
+            response = await self.send(
+                mtype, uid, group_id, "我曲库还是空的呢，一首都没做"
+            )
+            delivered = bool(response and response.get("message_id"))
+        else:
+            lines = [f"我曲库里有 {len(all_songs)} 首："]
+            for start in range(0, len(all_songs), 8):
+                lines.append("、".join(all_songs[start : start + 8]))
+            for line in lines:
+                response = await self.send(mtype, uid, group_id, line)
+                delivered = delivered and bool(
+                    response and response.get("message_id")
+                )
+                if config.SIMULATE_TYPING:
+                    await asyncio.sleep(random.uniform(0.4, 0.9))
+        log.info("[%s] 报了一次曲库清单（%d 首）", cid, len(all_songs))
+        self.mem.append(cid, "user", user_text)
+        self.mem.append(
+            cid, "assistant", f"（报了曲库清单，共 {len(all_songs)} 首）"
+        )
+        return {
+            "status": "success",
+            "delivered": delivered,
+            "error_code": "" if delivered else "delivery_unconfirmed",
+        }
+
+    async def _deliver_introspection(
+        self, cid, mtype, uid, group_id, user_text: str, topic: str
+    ) -> dict:
+        try:
+            report = self._introspect(topic, cid)
+        except Exception as exc:
+            log.warning("[%s] 自查 %s 出错：%s", cid, topic, exc)
+            report = ""
+        if not report:
+            return {
+                "status": "skipped",
+                "delivered": False,
+                "error_code": "empty_introspection_report",
+            }
+
+        delivered = True
+        for group in _group_lines(report, 3):
+            response = await self.send(mtype, uid, group_id, group)
+            delivered = delivered and bool(
+                response and response.get("message_id")
+            )
+            if config.SIMULATE_TYPING:
+                await asyncio.sleep(random.uniform(0.35, 0.8))
+        log.info("[%s] 自查：%s", cid, topic)
+        self.mem.append(cid, "user", user_text)
+        self.mem.append(
+            cid, "assistant", f"（查了自己的{topic}：{report[:80]}）"
+        )
+        return {
+            "status": "success",
+            "delivered": delivered,
+            "error_code": "" if delivered else "delivery_unconfirmed",
+        }
+
+    async def _deliver_sticker(
+        self, cid, mtype, uid, group_id, emotion_label: str
+    ) -> dict:
+        path = stickers.pick(emotion_label)
+        if path is None:
+            return {
+                "status": "skipped",
+                "delivered": False,
+                "error_code": "sticker_unavailable",
+            }
+        self._last_sticker_at[cid] = time.time()
+        log.info("[%s] 发表情包 %s（%s）", cid, path.name, emotion_label)
+        response = await self.send_segments(
+            mtype, uid, group_id, onebot.image_message(path, True)
+        )
+        delivered = bool(response and response.get("message_id"))
+        return {
+            "status": "success",
+            "delivered": delivered,
+            "error_code": "" if delivered else "delivery_unconfirmed",
+        }
+
+    async def _action_songlist(self, action: dict, context: dict) -> dict:
+        return await self._deliver_songlist(
+            context["cid"],
+            context["message_type"],
+            context["user_id"],
+            context["group_id"],
+            context.get("user_text") or "",
+        )
+
+    async def _action_introspect(self, action: dict, context: dict) -> dict:
+        topic = str(action.get("arg") or "").strip()
+        if not topic:
+            return {
+                "status": "skipped",
+                "delivered": False,
+                "error_code": "missing_action_arg",
+            }
+        return await self._deliver_introspection(
+            context["cid"],
+            context["message_type"],
+            context["user_id"],
+            context["group_id"],
+            context.get("user_text") or "",
+            topic,
+        )
+
+    async def _action_sticker(self, action: dict, context: dict) -> dict:
+        emotion_label = str(action.get("arg") or "").strip()
+        if not emotion_label:
+            return {
+                "status": "skipped",
+                "delivered": False,
+                "error_code": "missing_action_arg",
+            }
+        if rules.no_sticker(context["cid"]):
+            return {
+                "status": "skipped",
+                "delivered": False,
+                "error_code": "sticker_forbidden_by_rule",
+            }
+        return await self._deliver_sticker(
+            context["cid"],
+            context["message_type"],
+            context["user_id"],
+            context["group_id"],
+            emotion_label,
+        )
+
+    async def _dispatch_actions(self, actions: list[dict], context: dict) -> list[dict]:
+        return await self.action_runtime.dispatch(
+            actions,
+            context,
+            {
+                "songlist": self._action_songlist,
+                "introspect": self._action_introspect,
+                "sticker": self._action_sticker,
+            },
+        )
 
     # ---------- 事件入口 ----------
     async def handle_event(self, ev: dict) -> None:
@@ -1368,7 +1540,11 @@ class WhaleBot:
         if await self.handle_command(cid, text, mtype, uid, group_id):
             return
 
-        use_voice = config.TTS_ENABLED and wants_voice(text)
+        use_voice = (
+            config.TTS_ENABLED
+            and mtype == "private"
+            and wants_voice(text)
+        )
         log.info(
             "[%s] %s：%s%s%s",
             cid,
@@ -2090,7 +2266,15 @@ class WhaleBot:
         images: list[dict] | None = None,
         extra_context: str | None = None,
     ) -> list[dict]:
-        msgs = [{"role": "system", "content": self.persona_friend if is_friend(cid) else self.persona}]
+        # Groups and friends never receive the owner persona. The owner persona
+        # contains private relationship language and must stay behind the
+        # private-chat identity boundary.
+        msgs = [
+            {
+                "role": "system",
+                "content": self.persona if is_owner(cid) else self.persona_friend,
+            }
+        ]
 
         # 关系由主人用 /设关系 指定，关系词随便写（女朋友/男朋友/妹妹/老大…），
         # 这里按"类别"决定相处方式。没设 = 普通朋友。
@@ -2490,7 +2674,7 @@ class WhaleBot:
             )
 
         # 朋友的语境里不能出现"主人/爸爸"这类词（连人设外的能力说明也要换）
-        if is_friend(cid):
+        if not is_owner(cid):
             facts = [
                 line.replace("主人", "对方").replace("爸爸", "对方")
                 for line in facts
@@ -5204,7 +5388,11 @@ class WhaleBot:
                     return
 
             # 主人让她自检 → 真去试，不是嘴上说"我可以"
-            if wants_selfcheck(user_text) and not synthetic:
+            if (
+                wants_selfcheck(user_text)
+                and not synthetic
+                and is_owner_private(cid, mtype)
+            ):
                 log.info("[%s] 跑自检", cid)
                 try:
                     report = await self._selfcheck_report()
@@ -5221,7 +5409,11 @@ class WhaleBot:
                     return
 
             # 主人在问"你自己"的事 → 直接查真实数据，别让她嘴上敷衍
-            asked_topic = wants_introspect(user_text)
+            asked_topic = (
+                wants_introspect(user_text)
+                if is_owner_private(cid, mtype)
+                else ""
+            )
             # 提到具体歌名就当点歌，别当成"查歌单"
             # （踩过：主人说"我要曲库里的光年之外"，她回了一长串歌名）
             if asked_topic == "歌单" and len(user_text or "") <= 24:
@@ -5335,6 +5527,7 @@ class WhaleBot:
             # 主人直接叫她自己去看（不走申请流程）
             if (
                 wants_watch_video(user_text)
+                and is_owner_private(cid, mtype)
                 and affection.can(cid, "watch")[0]
                 and not self._watching.get(watching_key)
             ):
@@ -5399,12 +5592,36 @@ class WhaleBot:
                     model=config.VISION_MODEL if blocks else None,
                 )
 
-                # 她想上网查的话，搜一遍，让她拿着结果重说一次
-                if config.SEARCH_ENABLED:
-                    hit = _SEARCH_RE.search(content)
-                    if hit:
-                        query = hit.group(1).strip()
-                        content = _SEARCH_RE.sub("", content).strip() or "（我查一下）"
+                action_scope = (
+                    str(mid)
+                    if mid not in (None, "")
+                    else f"local-{uuid.uuid4().hex}"
+                )
+                parsed_actions = action_protocol.extract_actions(
+                    content,
+                    message_id=action_scope,
+                    source="model",
+                    allow_actions=True,
+                )
+                actions = parsed_actions["actions"]
+                dropped_actions = list(parsed_actions["dropped"])
+                content = parsed_actions["text"]
+                action_context = self._action_context(
+                    cid, mtype, uid, group_id, synthetic
+                )
+                action_context["user_text"] = user_text
+
+                # Search runs before the normal action pipeline because it
+                # requires a second model pass with grounded results.
+                search_action = _first_action(actions, "search")
+                if config.SEARCH_ENABLED and search_action:
+                    query = str(search_action.get("arg") or "").strip()
+                    actions = [
+                        item for item in actions
+                        if item.get("kind") != "search"
+                    ]
+                    content = content or "（我查一下）"
+                    if query:
                         found = await media.search(query, config.SEARCH_COUNT)
                         log.info("[%s] 搜索「%s」→ %d 条结果", cid, query, len(found))
                         if found:
@@ -5418,8 +5635,33 @@ class WhaleBot:
                                 ),
                                 model=config.VISION_MODEL if blocks else None,
                             )
-                            # 第二次回复里她常又写一遍标记，必须再清一次
-                            content = strip_markers(content)
+                            # Rewrite passes may only change text. Any marker
+                            # here is dropped and traced instead of executed.
+                            second = action_protocol.extract_actions(
+                                content,
+                                message_id=action_scope,
+                                source="search_rewrite",
+                                allow_actions=False,
+                            )
+                            dropped_actions.extend(second["dropped"])
+                            for action in second["dropped"]:
+                                self.action_runtime.record_dropped(
+                                    action, action_context, "search_rewrite"
+                                )
+                            content = second["text"] or "（我查一下）"
+                elif search_action:
+                    actions = [
+                        item for item in actions
+                        if item.get("kind") != "search"
+                    ]
+                    disabled = {
+                        **search_action,
+                        "reason": "search_disabled",
+                    }
+                    dropped_actions.append(disabled)
+                    self.action_runtime.record_dropped(
+                        disabled, action_context, "search_disabled"
+                    )
             except llm.LLMError as exc:
                 log.error("生成失败：%s", exc)
                 await self.send(
@@ -5434,24 +5676,25 @@ class WhaleBot:
             # 排查用：LOG_LEVEL=DEBUG 时能看到模型原话和清洗后的话
             log.debug("[%s] 原始输出：%r", cid, content[:400])
 
-            # 模型自己判断"主人让我去看视频"。
-            # 必须放在 strip_markers 之前——以前放在后面，标记早被清掉了，
-            # 所以这条路一直没生效，全靠关键词兜底（2026-10 才发现）
-            go_watch = False
-            if config.VIDEO_FRAMES_ENABLED and _WATCH_RE.search(content):
-                go_watch = True
-                content = _WATCH_RE.sub("", content).strip()
+            # Actions were extracted before the visible text was cleaned.
+            watch_action = _first_action(actions, "watch_video")
+            go_watch = bool(
+                config.VIDEO_FRAMES_ENABLED
+                and watch_action
+                and is_owner_private(cid, mtype)
+            )
+            if go_watch:
                 log.info("[%s] 她自己请求去看视频（标记）", cid)
 
-            # 模型想画图时写 [[画:描述]]。
-            # 必须在 strip_markers 之前抠出来——标记里有 _DRAW_RE，先 strip 就永远找不到，
-            # 症状是"她答应了要画，然后就没下文了"（2026-10-27 才发现，和 [[看片]] 同一个坑）
             draw_prompt = None
-            if config.IMAGE_ENABLED and _DRAW_RE.search(content):
-                found = _DRAW_RE.search(content)
-                draw_prompt = found.group(1).strip()
-                content = _DRAW_RE.sub("", content).strip()
+            draw_action = _first_action(actions, "draw")
+            if config.IMAGE_ENABLED and draw_action:
+                draw_prompt = str(draw_action.get("arg") or "").strip()
                 log.info("[%s] 想画：%s", cid, draw_prompt)
+            screenshot_action = _first_action(actions, "screenshot")
+            if screenshot_action and is_owner_private(cid, mtype):
+                asked_for_frames = True
+                log.info("[%s] 她想把截帧发出去", cid)
 
             # 兜底：任何路径漏下来的标记都不许发到聊天里
             content = strip_markers(content)
@@ -5487,8 +5730,36 @@ class WhaleBot:
                         f"（换个说法重说一遍。刚才那句提到了「{hit}」，"
                         "他不想聊这个，别再碰，也别提自己刚才说过什么。）"
                     )})
-                    again = await llm.chat(retry, model=config.VISION_MODEL if blocks else None)
-                    again = strip_markers(again or "")
+                    again_raw = await llm.chat(
+                        retry,
+                        model=config.VISION_MODEL if blocks else None,
+                    )
+                    rewritten = action_protocol.extract_actions(
+                        again_raw or "",
+                        message_id=action_scope,
+                        source="topic_rewrite",
+                        allow_actions=False,
+                    )
+                    dropped_actions.extend(
+                        {
+                            **action,
+                            "reason": "dropped_by_topic_rewrite",
+                        }
+                        for action in actions
+                    )
+                    dropped_actions.extend(rewritten["dropped"])
+                    for action in dropped_actions:
+                        if action.get("reason") in (
+                            "dropped_by_topic_rewrite",
+                            "actions_disabled_for_rewrite",
+                        ):
+                            self.action_runtime.record_dropped(
+                                action,
+                                action_context,
+                                str(action.get("reason") or "topic_rewrite"),
+                            )
+                    actions = []
+                    again = rewritten["text"]
                     if again and not rules.check_topic(cid, again, user_text):
                         content = affection.postprocess(cid, again)
                     else:
@@ -5503,7 +5774,7 @@ class WhaleBot:
                 log.debug("话题禁区检查失败：%s", exc)
 
             # 跟朋友说话：把提到爸爸的内容硬过滤掉（提示词挡不住的最后一层）
-            if is_friend(cid):
+            if not is_owner(cid):
                 before = content
                 content = await self._sanitize_for_friend(content)
                 if content != before:
@@ -5554,11 +5825,10 @@ class WhaleBot:
                     if hit_song:
                         asked_song = str(hit_song.get("query") or "")
                         log.info("从话里认出了库里的歌：《%s》", asked_song)
-                found = _SING_RE.search(content)
-                marker_song = ""
-                if found:
-                    marker_song = found.group(1).strip()
-                    content = _SING_RE.sub("", content).strip()
+                song_action = _first_action(actions, "song")
+                marker_song = str(
+                    (song_action or {}).get("arg") or ""
+                ).strip()
 
                 if asked_song:
                     sing_query = asked_song
@@ -5590,70 +5860,58 @@ class WhaleBot:
                         pass
 
             # 她自己想用声音说：模型写了 [[语音]]
-            if config.TTS_ENABLED and _VOICE_RE.search(content):
-                content = _VOICE_RE.sub("", content).strip()
-                if content:
-                    voice_mode = True
-                    log.info("[%s] 她选择用语音说：%s", cid, content[:40])
+            voice_action = _first_action(actions, "voice")
+            if (
+                config.TTS_ENABLED
+                and mtype == "private"
+                and voice_action
+                and content
+            ):
+                voice_mode = True
+                log.info("[%s] 她选择用语音说：%s", cid, content[:40])
 
             # 她要查自己服务器里的东西（只读）
             # 自查是她自己的体检报告，只给主人看。
             # 2026-10-29 踩过：朋友说一句「不记得了吗」，模型写了 [[查:记忆]]，
             # 代码没判身份，把整段旧对话摘要（还带着「爸爸」）倒进了朋友聊天里。
-            found = _INTROSPECT_RE.search(content) if is_owner(cid) else None
-            if found:
-                content = _INTROSPECT_RE.sub("", content).strip()
-                topic = found.group(1).strip()
-                try:
-                    report = self._introspect(topic, cid)
-                except Exception as exc:
-                    log.warning("[%s] 自查 %s 出错：%s", cid, topic, exc)
-                    report = ""
-                if report:
-                    # 双保险：万一以后有人放开上面的门禁，这里也要过滤
-                    if is_friend(cid):
-                        report = await self._sanitize_for_friend(report)
-                    # 一行一条会把聊天刷满（实测一次刷 7 条），合并成 2~3 条
-                    for group in _group_lines(report, 3):
-                        await self.send(mtype, uid, group_id, "\n".join(group))
-                        if config.SIMULATE_TYPING:
-                            await asyncio.sleep(random.uniform(0.35, 0.8))
-                    log.info("[%s] 自查：%s", cid, topic)
-                    self.mem.append(cid, "user", user_text)
-                    self.mem.append(cid, "assistant", f"（查了自己的{topic}：{report[:80]}）")
-                    return
-
-            # 她要把曲库全清单报出来（必须在 content 生成之后判断）
-            if _SONGLIST_RE.search(content):
-                content = _SONGLIST_RE.sub("", content).strip()
-                try:
-                    all_songs = songlib.names()
-                except Exception:
-                    all_songs = []
-                if not all_songs:
-                    await self.send(mtype, uid, group_id, "我曲库还是空的呢，一首都没做")
-                else:
-                    lines = [f"我曲库里有 {len(all_songs)} 首："]
-                    for start in range(0, len(all_songs), 8):
-                        lines.append("、".join(all_songs[start : start + 8]))
-                    for line in lines:
-                        await self.send(mtype, uid, group_id, line)
-                        if config.SIMULATE_TYPING:
-                            await asyncio.sleep(random.uniform(0.4, 0.9))
-                log.info("[%s] 报了一次曲库清单（%d 首）", cid, len(all_songs))
-                self.mem.append(cid, "user", user_text)
-                self.mem.append(
-                    cid, "assistant", f"（报了曲库清单，共 {len(all_songs)} 首）"
+            pre_actions = [
+                action for action in actions
+                if action.get("kind") in ("introspect", "songlist")
+            ]
+            if config.ACTIONS_V2 and pre_actions:
+                results = await self._dispatch_actions(
+                    pre_actions, action_context
                 )
-                return
+                if any(
+                    result.get("status") in ("success", "skipped")
+                    for result in results
+                ):
+                    return
+            elif not config.ACTIONS_V2:
+                introspect_action = _first_action(actions, "introspect")
+                if introspect_action and is_owner_private(cid, mtype):
+                    topic = str(introspect_action.get("arg") or "").strip()
+                    result = await self._deliver_introspection(
+                        cid, mtype, uid, group_id, user_text, topic
+                    )
+                    if result.get("status") == "success":
+                        return
+
+                # 她要把曲库全清单报出来（必须在 content 生成之后判断）
+                songlist_action = _first_action(actions, "songlist")
+                if songlist_action and is_owner_private(cid, mtype):
+                    result = await self._deliver_songlist(
+                        cid, mtype, uid, group_id, user_text
+                    )
+                    if result.get("status") == "success":
+                        return
 
             # 网上找图
             find_query = None
             if config.IMAGE_SEARCH_ENABLED:
-                found = _FINDIMG_RE.search(content)
-                if found:
-                    find_query = found.group(1).strip()
-                    content = _FINDIMG_RE.sub("", content).strip()
+                find_action = _first_action(actions, "find_image")
+                if find_action:
+                    find_query = str(find_action.get("arg") or "").strip()
                 elif wants_find_image(user_text):
                     find_query = user_text
                 if find_query:
@@ -5665,7 +5923,7 @@ class WhaleBot:
 
             # 把表情包标记抠出来，正文里不显示
             sticker_wants = (
-                _STICKER_RE.findall(content)
+                _action_args(actions, "sticker")
                 if (config.STICKERS_ENABLED and not _no_sticker_now)
                 else []
             )
@@ -5681,7 +5939,6 @@ class WhaleBot:
                         want = better
                     fixed.append(want)
                 sticker_wants = [w for w in fixed if w]
-                content = _STICKER_RE.sub("", content).strip()
                 log.info("[%s] 想发表情包：%s", cid, sticker_wants)
                 if not content and not voice_mode:
                     content = "（发了个表情）"
@@ -5752,6 +6009,31 @@ class WhaleBot:
                         picked,
                         emotion.stats(cid),
                     )
+
+            runtime_sticker_actions = []
+            model_sticker_actions = [
+                item for item in actions if item.get("kind") == "sticker"
+            ]
+            for index, want in enumerate(
+                sticker_wants[: config.STICKER_MAX_PER_REPLY]
+            ):
+                action = (
+                    model_sticker_actions[index]
+                    if index < len(model_sticker_actions)
+                    and model_sticker_actions[index].get("arg") == want
+                    else {
+                        "id": f"{action_scope}:sticker:extra:{index + 1}",
+                        "kind": "sticker",
+                        "arg": want,
+                        "raw": "",
+                        "source": (
+                            "user_rule"
+                            if wants_sticker(user_text) or asked_more
+                            else "bot_random"
+                        ),
+                    }
+                )
+                runtime_sticker_actions.append(action)
             log.debug("[%s] 清理后：%r", cid, content[:400])
 
             if voice_mode:
@@ -5799,12 +6081,6 @@ class WhaleBot:
                 self._spawn(
                     self._watch_random_video(cid, mtype, uid, group_id)
                 )
-
-            # 模型觉得主人想看画面，会写 [[截图]]
-            if _SHOT_RE.search(content):
-                asked_for_frames = True
-                content = _SHOT_RE.sub("", content).strip()
-                log.info("[%s] 她想把截帧发出去", cid)
 
             # 网上找图：搜出来下载好，再发过去
             if find_query:
@@ -5884,19 +6160,32 @@ class WhaleBot:
                     )
 
             # 文字发完，再补表情包
-            for want in sticker_wants[: config.STICKER_MAX_PER_REPLY]:
-                emotion_label = want
-                path = stickers.pick(emotion_label)
-                if path is None:
-                    log.info("[%s] 没有「%s」这类表情包，跳过", cid, emotion_label)
-                    continue
-                self._last_sticker_at[cid] = time.time()
-                log.info("[%s] 发表情包 %s（%s）", cid, path.name, emotion_label)
-                await self.send_segments(
-                    mtype, uid, group_id, onebot.image_message(path, True)
+            if config.ACTIONS_V2 and runtime_sticker_actions:
+                results = await self._dispatch_actions(
+                    runtime_sticker_actions, action_context
                 )
-                if config.SIMULATE_TYPING:
-                    await asyncio.sleep(random.uniform(0.4, 1.0))
+                for result in results:
+                    if result.get("status") not in ("success",):
+                        log.info(
+                            "[%s] 表情包动作未执行：%s（%s）",
+                            cid,
+                            result.get("status"),
+                            result.get("error_code"),
+                        )
+            else:
+                for want in sticker_wants[: config.STICKER_MAX_PER_REPLY]:
+                    emotion_label = want
+                    path = stickers.pick(emotion_label)
+                    if path is None:
+                        log.info("[%s] 没有「%s」这类表情包，跳过", cid, emotion_label)
+                        continue
+                    self._last_sticker_at[cid] = time.time()
+                    log.info("[%s] 发表情包 %s（%s）", cid, path.name, emotion_label)
+                    await self.send_segments(
+                        mtype, uid, group_id, onebot.image_message(path, True)
+                    )
+                    if config.SIMULATE_TYPING:
+                        await asyncio.sleep(random.uniform(0.4, 1.0))
 
             # 用这句话更新她的心情（下一轮的说法和表情包都会受影响）
             try:

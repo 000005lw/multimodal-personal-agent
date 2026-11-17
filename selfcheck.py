@@ -543,6 +543,116 @@ def test_friend_privacy() -> None:
         config.OWNER_QQS.clear()
         config.OWNER_QQS.update(real_owner)
 
+
+def test_owner_only_guards() -> None:
+    """Friends and groups must not reach owner-only introspection."""
+    friend = 77778
+    group = 424242
+    owner_group = 10001
+    owner = next(iter(config.OWNER_QQS))
+    config.FRIEND_QQS.add(friend)
+
+    async def run_all() -> None:
+        b = botmod.WhaleBot()
+        tmpdir = config.DATA_DIR / "selfcheck_owner_guard"
+        tmpdir.mkdir(parents=True, exist_ok=True)
+        b.mem = memmod.Memory(tmpdir / "memory.json", 5)
+        b._contacts[str(friend)] = {
+            "name": "测试朋友",
+            "asked": 1,
+            "awaiting": False,
+        }
+        sent: list[tuple] = []
+        calls = {"selfcheck": 0, "introspect": 0}
+
+        async def fake_send(*args, **kwargs):
+            sent.append(args)
+            return {"message_id": 1}
+
+        async def fake_selfcheck() -> str:
+            calls["selfcheck"] += 1
+            return "SELF-CHECK-SECRET"
+
+        def fake_introspect(topic: str, cid: str) -> str:
+            calls["introspect"] += 1
+            return f"INTROSPECT-SECRET:{topic}"
+
+        async def noop(*args, **kwargs) -> None:
+            return None
+
+        b.send = fake_send
+        b._selfcheck_report = fake_selfcheck
+        b._introspect = fake_introspect
+        b._neuron_learn = noop
+        b._compact = noop
+        b._audit_friend = lambda *args: None
+
+        try:
+            await b.reply(
+                f"u{friend}", "自检一下", "private", friend, None, 101
+            )
+            check("朋友不能触发自检", calls["selfcheck"] == 0,
+                  f"调用 {calls['selfcheck']} 次")
+
+            await b.reply(
+                f"u{friend}", "你的状态怎么样", "private", friend, None, 102
+            )
+            check("朋友不能触发内部自查", calls["introspect"] == 0,
+                  f"调用 {calls['introspect']} 次")
+
+            await b.reply(
+                f"g{group}", "自检一下", "group", friend, group, 103
+            )
+            check("群聊不能触发自检", calls["selfcheck"] == 0,
+                  f"调用 {calls['selfcheck']} 次")
+            await b.reply(
+                f"g{group}", "你的状态怎么样", "group", friend, group, 104
+            )
+            check("群聊不能触发内部自查", calls["introspect"] == 0,
+                  f"调用 {calls['introspect']} 次")
+
+            group_msgs = b.build_messages(f"g{group}", "你好", False, None, None)
+            check(
+                "群聊使用非主人人设",
+                group_msgs[0].get("content") == b.persona_friend,
+            )
+            owner_collision = b.build_messages(
+                f"g{owner_group}", "你好", False, None, None
+            )
+            check(
+                "群号与主人 QQ 相同也不使用主人人设",
+                owner_collision[0].get("content") == b.persona_friend,
+            )
+            owner_msgs = b.build_messages(f"u{owner}", "你好", False, None, None)
+            check(
+                "主人私聊仍使用主人人设",
+                owner_msgs[0].get("content") == b.persona,
+            )
+
+            non_owner_sent = len(sent)
+            await b.reply(
+                f"u{owner}", "自检一下", "private", owner, None, 105
+            )
+            check("主人私聊可以触发自检", calls["selfcheck"] == 1,
+                  f"调用 {calls['selfcheck']} 次")
+            check(
+                "非主人回复不含内部报告",
+                all("SELF-CHECK-SECRET" not in " ".join(map(str, args))
+                    for args in sent[:non_owner_sent]),
+            )
+        finally:
+            try:
+                await b.ob.close()
+            except Exception:
+                pass
+            shutil.rmtree(tmpdir, ignore_errors=True)
+
+    try:
+        asyncio.run(run_all())
+    finally:
+        config.FRIEND_QQS.discard(friend)
+
+
 def _check_sticker_reply() -> None:
     """只发表情包时应该现编一句问话，不能背固定台词。"""
     from pathlib import Path as _P
@@ -754,6 +864,393 @@ def _check_rule_isolation() -> None:
         _rules.clear(cid)
 
 
+def _check_relay_config() -> None:
+    """The relay token must come from config and stay out of request URLs."""
+    from pathlib import Path as _Path
+
+    import home_agent as relay
+
+    src = (_Path(__file__).parent / "home_agent.py").read_text(encoding="utf-8")
+    literal = any(
+        line.strip().startswith("TOKEN =")
+        and ('"' in line or "'" in line)
+        for line in src.splitlines()
+    )
+    check("relay 源码不含字面量 token", not literal)
+
+    old_token = relay.TOKEN
+    old_urlopen = relay.urllib.request.urlopen
+    try:
+        relay.TOKEN = ""
+        try:
+            relay.ensure_config()
+            missing_ok = False
+        except RuntimeError:
+            missing_ok = True
+        check("relay 缺少 HOME_TOKEN 时快速失败", missing_ok)
+
+        captured = []
+
+        class FakeResponse:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                return False
+
+            def read(self):
+                return b'{"job": null}'
+
+        def fake_urlopen(req, timeout=0):
+            captured.append(req)
+            return FakeResponse()
+
+        relay.TOKEN = "test-relay-token"
+        relay.urllib.request.urlopen = fake_urlopen
+        check("relay 能读取合法 token", relay.poll() == {"job": None})
+        req = captured[0]
+        check(
+            "relay token 不再出现在 URL",
+            "token=" not in req.full_url and req.full_url.endswith(
+                f"?v={relay.CODE_VERSION}"
+            ),
+            req.full_url,
+        )
+        check(
+            "relay token 通过请求头发送",
+            req.get_header("X-home-token") == "test-relay-token",
+            str(req.get_header("X-home-token")),
+        )
+    finally:
+        relay.TOKEN = old_token
+        relay.urllib.request.urlopen = old_urlopen
+
+
+def _check_action_protocol() -> None:
+    """Action extraction must be side-effect free and order preserving."""
+    import action_protocol
+
+    raw = (
+        "先说一句。\n"
+        "[[搜索：鲸鱼]]\n"
+        "[[画:蓝色鲸鱼]] 中间文字 "
+        "[[找图：海边]] [[唱：晴天]] [[看片]] [[语音]] "
+        "[[歌单]] [[查:状态]] [[贴图：开心]] [[截图]]"
+    )
+    parsed = action_protocol.extract_actions(raw, message_id=101)
+    kinds = [item["kind"] for item in parsed["actions"]]
+    check(
+        "动作协议提取全部标记",
+        kinds == [
+            "search", "draw", "find_image", "song", "watch_video",
+            "voice", "songlist", "introspect", "sticker", "screenshot",
+        ],
+        str(kinds),
+    )
+    check(
+        "动作协议保留正文",
+        "先说一句" in parsed["text"]
+        and "中间文字" in parsed["text"]
+        and "[[" not in parsed["text"],
+        repr(parsed["text"]),
+    )
+    check(
+        "动作协议支持中文冒号",
+        parsed["actions"][0]["arg"] == "鲸鱼"
+        and parsed["actions"][3]["arg"] == "晴天",
+    )
+    duplicate = action_protocol.extract_actions(
+        "[[贴图:开心]][[贴图:难过]]", message_id=102
+    )
+    check(
+        "同类动作按出现顺序编号",
+        [item["id"] for item in duplicate["actions"]]
+        == ["102:sticker:1", "102:sticker:2"],
+        str([item["id"] for item in duplicate["actions"]]),
+    )
+    disabled = action_protocol.extract_actions(
+        "正文[[唱:晴天]]", message_id=103, allow_actions=False
+    )
+    check(
+        "重写路径禁止新增动作",
+        disabled["actions"] == []
+        and disabled["dropped"]
+        and disabled["text"] == "正文",
+    )
+    malformed = action_protocol.extract_actions(
+        "前[[唱:]]后[[查]]尾", message_id=104
+    )
+    check(
+        "畸形控制标记也不会漏到正文",
+        malformed["actions"] == [] and malformed["text"] == "前后尾",
+        repr(malformed["text"]),
+    )
+
+
+def _check_action_runtime() -> None:
+    """Policy, dispatch, idempotency and trace work without bot integration."""
+    import action_runtime
+    import json
+    import tempfile
+
+    contexts = {
+        "owner": {
+            "is_owner": True, "is_friend": False,
+            "is_group": False, "synthetic": False,
+        },
+        "friend": {
+            "is_owner": False, "is_friend": True,
+            "is_group": False, "synthetic": False,
+        },
+        "group": {
+            "is_owner": False, "is_friend": False,
+            "is_group": True, "synthetic": False,
+        },
+        "synthetic": {
+            "is_owner": True, "is_friend": False,
+            "is_group": False, "synthetic": True,
+        },
+    }
+    check(
+        "策略允许主人私聊自查",
+        action_runtime.authorize(
+            {"kind": "introspect"}, contexts["owner"]
+        ) == (True, "allowed"),
+    )
+    check(
+        "策略拒绝朋友自查",
+        not action_runtime.authorize(
+            {"kind": "introspect"}, contexts["friend"]
+        )[0],
+    )
+    check(
+        "策略拒绝群聊贴图",
+        not action_runtime.authorize(
+            {"kind": "sticker"}, contexts["group"]
+        )[0],
+    )
+    check(
+        "策略拒绝 synthetic 主动动作",
+        not action_runtime.authorize(
+            {"kind": "sticker"}, contexts["synthetic"]
+        )[0],
+    )
+
+    with tempfile.TemporaryDirectory(prefix="whale_actions_") as tmp:
+        trace_path = os.path.join(tmp, "trace.jsonl")
+        runtime = action_runtime.ActionRuntime(trace_path)
+
+        async def run_all():
+            async def handler(action, context):
+                return {
+                    "status": "success",
+                    "delivered": True,
+                    "error_code": "",
+                }
+
+            first = await runtime.dispatch_one(
+                {"id": "m1:demo:1", "kind": "songlist", "arg": ""},
+                contexts["owner"],
+                {"songlist": handler},
+            )
+            duplicate = await runtime.dispatch_one(
+                {"id": "m1:demo:1", "kind": "songlist", "arg": ""},
+                contexts["owner"],
+                {"songlist": handler},
+            )
+            denied = await runtime.dispatch_one(
+                {"id": "m2:demo:1", "kind": "introspect", "arg": "状态"},
+                contexts["friend"],
+                {"introspect": handler},
+            )
+            unregistered = await runtime.dispatch_one(
+                {"id": "m3:demo:1", "kind": "song", "arg": "晴天"},
+                contexts["owner"],
+                {"songlist": handler},
+            )
+            return first, duplicate, denied, unregistered
+
+        first, duplicate, denied, unregistered = asyncio.run(run_all())
+        check("运行时执行已注册动作", first.get("status") == "success")
+        check(
+            "运行时跳过重复动作 ID",
+            duplicate.get("error_code") == "duplicate_action_id",
+        )
+        check("运行时拒绝越权动作", denied.get("status") == "denied")
+        check(
+            "运行时识别未注册工具",
+            unregistered.get("error_code") == "unregistered_tool",
+        )
+        lines = [
+            json.loads(line)
+            for line in open(trace_path, encoding="utf-8").read().splitlines()
+            if line.strip()
+        ]
+        check("运行时为每次动作写 trace", len(lines) == 4, f"{len(lines)} 条")
+        check(
+            "trace 不含聊天原文或真实 QQ",
+            all("在吗" not in line and "10001" not in line for line in lines),
+        )
+
+
+def _check_action_replay() -> None:
+    """The synthetic replay suite must be deterministic and fully passing."""
+    import json
+    import subprocess
+
+    root = os.path.dirname(os.path.abspath(__file__))
+    script = os.path.join(root, "tools", "action_replay.py")
+    done = subprocess.run(
+        [sys.executable, script, "--json"],
+        cwd=root,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    summary = {}
+    if done.returncode == 0:
+        try:
+            summary = json.loads(done.stdout.strip().splitlines()[-1])
+        except (IndexError, json.JSONDecodeError):
+            summary = {}
+    check(
+        "离线动作回放全部通过",
+        done.returncode == 0
+        and summary.get("passed") == summary.get("scenarios") == 36
+        and summary.get("unauthorized_executions") == 0
+        and summary.get("duplicate_side_effects") == 0,
+        done.stdout.strip()[:180] if done.stdout.strip() else done.stderr.strip()[:180],
+    )
+
+
+def test_action_runtime_reply() -> None:
+    """The three MVP tools run through policy and tracing in reply()."""
+    friend = 77779
+    group = 424243
+    owner = next(iter(config.OWNER_QQS))
+    config.FRIEND_QQS.add(friend)
+    old_v2 = config.ACTIONS_V2
+    config.ACTIONS_V2 = True
+    original_chat = botmod.llm.chat
+
+    async def run_all() -> None:
+        import action_runtime
+        import tempfile
+
+        with tempfile.TemporaryDirectory(prefix="whale_runtime_reply_") as tmp:
+            b = botmod.WhaleBot()
+            b.mem = memmod.Memory(os.path.join(tmp, "memory.json"), 5)
+            b._contacts[str(friend)] = {
+                "name": "测试朋友", "asked": 1, "awaiting": False,
+            }
+            b.action_runtime = action_runtime.ActionRuntime(
+                os.path.join(tmp, "trace.jsonl")
+            )
+            sent = []
+            segments_sent = []
+
+            async def fake_send(*args, **kwargs):
+                sent.append(args)
+                return {"message_id": len(sent)}
+
+            async def fake_segments(*args, **kwargs):
+                segments_sent.append(args)
+                return {"message_id": 1000 + len(segments_sent)}
+
+            async def fake_chat(*args, **kwargs):
+                return CANNED_ACTION_REPLY
+
+            async def noop(*args, **kwargs):
+                return None
+
+            b.send = fake_send
+            b.send_segments = fake_segments
+            b._neuron_learn = noop
+            b._compact = noop
+            b._audit_friend = lambda *args: None
+            botmod.llm.chat = fake_chat
+
+            try:
+                CANNED_ACTION_REPLY = "我去看看[[歌单]]"
+                await b.reply(
+                    f"u{owner}", "看看", "private", owner, None, 201
+                )
+                check(
+                    "主人动作标记实际执行",
+                    any("曲库" in str(args) for args in sent),
+                    str(sent[-1:])[:80],
+                )
+
+                sent.clear()
+                b._introspect = lambda topic, cid: "STATUS-OK"
+                CANNED_ACTION_REPLY = "[[查:状态]][[歌单]]"
+                await b.reply(
+                    f"u{owner}", "看看", "private", owner, None, 204
+                )
+                check(
+                    "多个前置工具动作都执行",
+                    any("STATUS-OK" in str(args) for args in sent)
+                    and any("曲库" in str(args) for args in sent),
+                    str(sent)[:120],
+                )
+
+                sent.clear()
+                segments_sent.clear()
+                CANNED_ACTION_REPLY = "我去看看[[查:性格]]"
+                await b.reply(
+                    f"u{friend}", "看看", "private", friend, None, 202
+                )
+                check(
+                    "朋友动作在执行前被拒绝",
+                    all("性格快照" not in str(args) for args in sent),
+                    str(sent)[:100],
+                )
+
+                sent.clear()
+                old_frames = config.VIDEO_FRAMES_ENABLED
+                config.VIDEO_FRAMES_ENABLED = True
+                watched = []
+
+                async def fake_watch(*args, **kwargs):
+                    watched.append(args)
+
+                b._watch_random_video = fake_watch
+                CANNED_ACTION_REPLY = "我去逛逛[[看片]]"
+                try:
+                    await b.reply(
+                        f"u{friend}", "看看", "private", friend, None, 205
+                    )
+                    check(
+                        "朋友不能触发看视频动作",
+                        watched == [],
+                        str(watched)[:100],
+                    )
+                finally:
+                    config.VIDEO_FRAMES_ENABLED = old_frames
+
+                sent.clear()
+                segments_sent.clear()
+                CANNED_ACTION_REPLY = "好啊[[贴图:开心]]"
+                await b.reply(
+                    f"g{group}", "看看", "group", friend, group, 206
+                )
+                check(
+                    "群聊贴图动作被拒绝",
+                    segments_sent == [],
+                    str(segments_sent)[:100],
+                )
+            finally:
+                await b.ob.close()
+
+
+    try:
+        asyncio.run(run_all())
+    finally:
+        botmod.llm.chat = original_chat
+        config.ACTIONS_V2 = old_v2
+        config.FRIEND_QQS.discard(friend)
+
+
 def main() -> int:
     _check_name_consistency()
     _check_emotion()
@@ -761,6 +1258,10 @@ def main() -> int:
     _check_sysinfo()
     _check_sticker_reply()
     _check_rule_isolation()
+    _check_relay_config()
+    _check_action_protocol()
+    _check_action_runtime()
+    _check_action_replay()
     _ok, _detail = _check_bot_modules_imported()
     check("bot 里用到的模块都导入了", _ok, _detail)
     print("=" * 58)
@@ -770,6 +1271,8 @@ def main() -> int:
     test_contact_names()
     test_self_knowledge()
     test_friend_privacy()
+    test_owner_only_guards()
+    test_action_runtime_reply()
     asyncio.run(test_end_to_end())
 
     failed = [r for r in results if r.startswith("[FAIL]")]

@@ -19,7 +19,7 @@
 | QQ 桥接 | OneBot v11 标准协议，后端是 docker 容器 **SnowLuma**（HTTP 3001 发消息，HTTP 上报到 8090） |
 | 部署形态 | 云服务器跑 bot（systemd user service）；家里电脑跑 `whale-relay.py`（SSH 反向隧道 + 干重活） |
 | 数据在哪 | 全部在 `data/` 下的 json / sqlite，**没有外部存储**，拷贝 `data/` 即完整备份 |
-| 规模 | 记忆 772 条节点 / 2143 条突触；曲库 35 首；自测 123 项 |
+| 规模 | 记忆 772 条节点 / 2143 条突触；曲库 35 首；自测 159 项 |
 
 ---
 
@@ -91,6 +91,8 @@ QQ 用户发消息
 | `llm.py` | DeepSeek 调用封装（重试、超时、消息裁剪） | 单价敏感：这里控制了 max_tokens |
 | `onebot.py` | OneBot v11 客户端：发私聊/群聊、CQ 码拼装、媒体消息构造 | 只做协议，不含业务 |
 | `persona.md` / `persona_friend.md` | 人设（主人口吻 / 朋友口吻） | 改完**重启即生效**，不需要改代码 |
+| `action_protocol.py` | 文本动作标记的纯解析与清理 | 无副作用，不依赖 bot |
+| `action_runtime.py` | 三工具策略、执行状态和脱敏 trace | 默认关闭，逐步 canary |
 
 ### 3.2 记忆系统（最复杂，见 `docs/DATA-MODEL.md`）
 
@@ -129,7 +131,7 @@ QQ 用户发消息
 
 | 文件 | 职责 |
 | --- | --- |
-| `selfcheck.py` | 离线自测 **123 项**，不连 QQ、不花 token；改完必须先跑 |
+| `selfcheck.py` | 离线自测 **159 项**，不连 QQ、不花 token；改完必须先跑 |
 | `sysinfo.py` | 服务器自身状态（内存/磁盘/容器/中继在线） |
 | `notify.py` | 邮件通知（掉线时发二维码等） |
 | `evolve.py` | 性格快照（只对主人；朋友不参与“她的成长”） |
@@ -237,7 +239,7 @@ docker run -d --name snowluma -p 127.0.0.1:3001:3001 \
 #    首次需要扫码登录 QQ（详见 deploy/snowluma.md）
 
 # 4) 自测（不连 QQ、不花钱）
-python selfcheck.py           # 期望：共 123 项，通过 123 项
+python selfcheck.py           # 期望：共 159 项，通过 159 项
 
 # 5) 启动
 python bot.py                 # 或 systemctl --user start whale-bot（详见 docs/OPERATIONS.md）
@@ -249,7 +251,7 @@ python bot.py                 # 或 systemctl --user start whale-bot（详见 do
 
 ## 9. 测试与验收标准
 
-- `python selfcheck.py` —— **唯一硬门槛**，123 项全过才算改完。
+- `python selfcheck.py` —— **唯一硬门槛**，159 项全过才算改完。
   它覆盖：纯函数、指令解析、隐私隔离（朋友看不到“爸爸”）、贴图逻辑、自检模块 import、
   规则隔离（改一条不冲掉另一条）等。
 - 手动冒烟：

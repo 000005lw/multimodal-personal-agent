@@ -11,7 +11,7 @@
 ```bash
 git checkout -b feat/your-thing
 # 改代码
-python selfcheck.py            # 必须 123/123，这是唯一硬门槛
+python selfcheck.py            # 必须 159/159，这是唯一硬门槛
 git commit -m "feat: 一句话说清改了什么"
 ```
 

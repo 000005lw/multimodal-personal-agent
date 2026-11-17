@@ -4,25 +4,27 @@
 拿到任务后用家里的宽带去读 B站/抖音（机房 IP 会被这些站拦，家里宽带不会）。
 
 用法：
-    1. 配好下面的 SERVER_TOKEN（和服务器 .env 里的 HOME_TOKEN 一样）
+    1. 在 .env 里配好 HOME_TOKEN（和服务器 .env 里的 HOME_TOKEN 一样）
     2. 先开 SSH 隧道：ssh -N -L 8091:127.0.0.1:8090 ubuntu@YOUR_SERVER_IP
     3. 再跑：python home_agent.py
 """
 
 import json
+import os
 import re
 import time
 import urllib.error
-import urllib.parse
 import urllib.request
 
+import config
+
 # 隧道把服务器上的 8090 映射到本机的 8091
-BASE = "http://127.0.0.1:8091"
-TOKEN = "home-jec6wzl9phn5ktmq"
+BASE = os.environ.get("HOME_RELAY_URL", "http://127.0.0.1:8091").rstrip("/")
+TOKEN = config.HOME_TOKEN.strip()
 
 # 中继代码版本。改了 home_agent.py / sing.py 就 +1，
 # 服务器靠它判断"对面那个黑窗口是不是还跑着旧代码"（忘了重启中继是常事）。
-CODE_VERSION = 7
+CODE_VERSION = 8
 
 UA_MOBILE = (
     "Mozilla/5.0 (iPhone; CPU iPhone OS 16_6 like Mac OS X) "
@@ -34,6 +36,14 @@ UA_DESKTOP = (
 )
 
 BV_RE = re.compile(r"(BV[0-9A-Za-z]{10})")
+
+
+def ensure_config() -> None:
+    """Fail fast instead of sending unauthenticated relay requests."""
+    if not TOKEN:
+        raise RuntimeError(
+            "缺少 HOME_TOKEN：请在 .env 中填入与服务器一致的 relay token"
+        )
 
 
 def http_get(url, headers, timeout=20):
@@ -430,7 +440,8 @@ def handle(job):
 
 
 def poll():
-    url = f"{BASE}/jobs/poll?token={urllib.parse.quote(TOKEN)}&v={CODE_VERSION}"
+    ensure_config()
+    url = f"{BASE}/jobs/poll?v={CODE_VERSION}"
     req = urllib.request.Request(
         url, headers={"X-Home-Token": TOKEN, "X-Home-Version": str(CODE_VERSION)}
     )
@@ -439,6 +450,7 @@ def poll():
 
 
 def report(job_id, result):
+    ensure_config()
     body = json.dumps({"id": job_id, "result": result}).encode()
     req = urllib.request.Request(
         f"{BASE}/jobs/result",
@@ -451,6 +463,11 @@ def report(job_id, result):
 
 
 def main():
+    try:
+        ensure_config()
+    except RuntimeError as exc:
+        print(f"[!] {exc}")
+        return 2
     print("=" * 46)
     print("  家里电脑中转 已启动")
     print(f"  连的是 {BASE}")
@@ -490,6 +507,6 @@ def main():
 
 if __name__ == "__main__":
     try:
-        main()
+        raise SystemExit(main())
     except KeyboardInterrupt:
         print("\n已停止")
