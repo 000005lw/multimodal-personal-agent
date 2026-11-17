@@ -1,0 +1,26 @@
+# systemd 用户级服务模板
+#   mkdir -p ~/.config/systemd/user
+#   cp deploy/whale-bot.service ~/.config/systemd/user/
+#   systemctl --user daemon-reload && systemctl --user enable --now whale-bot
+#   loginctl enable-linger $USER        # 关键：否则退出 SSH 会被杀
+#
+# 把 %h/whale-bot 改成你实际的代码路径。
+
+[Unit]
+Description=Whale Bot (QQ personal agent)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h/whale-bot
+Environment=PYTHONUNBUFFERED=1
+Environment=PYTHONIOENCODING=utf-8
+ExecStart=%h/whale-bot/.venv/bin/python %h/whale-bot/bot.py
+Restart=always
+RestartSec=5
+# 内存保护：2G 机器上别让泄漏拖垮整机
+MemoryMax=800M
+
+[Install]
+WantedBy=default.target

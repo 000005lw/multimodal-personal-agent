@@ -731,12 +731,36 @@ def _check_bot_modules_imported() -> tuple[bool, str]:
     return True, f"bot.py 用到的 {len(used)} 个模块都导入了（{', '.join(sorted(used))}）"
 
 
+def _check_rule_isolation() -> None:
+    """改一条规则不能把另一条冲掉（GitHub issue #1 @mattabate 报的 bug）。"""
+    import rules as _rules
+
+    cid = "u_selfcheck_rules"
+    _rules.clear(cid)
+    try:
+        _rules.save(cid, {"no_sticker": True}, "别发表情包")
+        # 模拟"模型没提表情包"的抽取结果：字段应是 None，不是 False
+        cleaned = _rules._clean(
+            {"quiet": [{"start": "00:00", "end": "09:00", "days": "all"}]}
+        )
+        check(
+            "没提表情包时字段是 None",
+            cleaned.get("no_sticker") is None,
+            f"实际 {cleaned.get('no_sticker')!r}",
+        )
+        _rules.save(cid, cleaned, "以后九点前别找我")
+        check("别的规则不能把表情包禁令冲掉", _rules.no_sticker(cid) is True)
+    finally:
+        _rules.clear(cid)
+
+
 def main() -> int:
     _check_name_consistency()
     _check_emotion()
     _check_no_fabrication()
     _check_sysinfo()
     _check_sticker_reply()
+    _check_rule_isolation()
     _ok, _detail = _check_bot_modules_imported()
     check("bot 里用到的模块都导入了", _ok, _detail)
     print("=" * 58)

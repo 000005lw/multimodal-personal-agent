@@ -7,17 +7,18 @@ cmd 按 GBK 解析 .bat，文件内容里有中文会变成乱码路径（踩过
     python view_graph.py            # 拉库、画图、打开
     python view_graph.py --no-open  # 只生成不打开
     python view_graph.py --no-pull  # 不拉服务器，直接画本地库
-    python view_graph.py --cid u2122256110
+    python view_graph.py --cid u1000000011
 """
 
 from __future__ import annotations
 
 import subprocess
+import os
 import sys
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
-SERVER = "ubuntu@<你的服务器IP>"
+SERVER = os.environ.get("WHALE_SERVER", "ubuntu@YOUR_SERVER_IP")
 REMOTE_DB = "/home/ubuntu/whale-bot/data/neuron.db"
 
 

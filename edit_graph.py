@@ -8,20 +8,21 @@
 4. 补丁传不上去就留在本地，下次再跑会补
 
     python edit_graph.py
-    python edit_graph.py --cid u2122256110
+    python edit_graph.py --cid u1000000011
     python edit_graph.py --server-only   # 只把本地补丁传上去应用
 """
 
 from __future__ import annotations
 
 import subprocess
+import os
 import sys
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 DATA = HERE / "data"
 PATCH = DATA / "neuron_patch.jsonl"
-SERVER = "ubuntu@<你的服务器IP>"
+SERVER = os.environ.get("WHALE_SERVER", "ubuntu@YOUR_SERVER_IP")
 REMOTE_DIR = "/home/ubuntu/whale-bot"
 
 

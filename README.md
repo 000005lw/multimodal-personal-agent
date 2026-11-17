@@ -1,62 +1,60 @@
-# 多模态个人智能体（Multimodal Personal Agent）
+# multimodal-personal-agent
 
-> 一个长期在线运行的个人智能体：**神经元式长期记忆 + 多模态生成与理解 + 工具调用编排 + 单进程部署**。
-> 不是 demo——每天真实在跑，有自测、有监控、有容灾。
+把大模型接到 QQ 上的**私人陪伴型 agent**。单进程 Python，一个人 + 几个朋友的私聊场景。
 
-## 架构
-
-```
-即时通讯接入层（OneBot v11 / HTTP）
-        │
-        ▼
-   单进程 asyncio 事件循环（bot.py）
-        │
-        ├── 记忆层   neuron.py      记忆节点 + 突触、扩散激活召回、FSRS 遗忘曲线
-        ├── 生成层   llm.py         提示词分层（人设 / 事实 / 记忆注入）、工具路由
-        ├── 多模态   voice.py / imagegen.py / media.py
-        ├── 状态层   affection.py / emotion.py / mood.py / evolve.py
-        └── 运维层   notify.py / sysinfo.py / home_agent.py（反向轮询中继）
-```
-
-## 核心模块
-
-| 模块 | 职责 |
-| --- | --- |
-| `neuron.py` | 神经元式记忆库：节点 / 突触建模，扩散激活召回，赫布式共现连边，FSRS 遗忘曲线调度复习 |
-| `neuron_view.py` | 记忆网络可视化（导出 3D 力导向图，单文件 HTML） |
-| `neuron_shadow.py` | 影子评测：用真实的下一句回复做盲测，对比"激活召回"与"随机抽样"的语义相关度 |
-| `voice.py` | 零样本语音克隆（ZipVoice ONNX int8，按标点切段 + 静音拼接） |
-| `imagegen.py` | 文生图 / 参考图编辑（锁角色一致性） |
-| `media.py` | 视频理解：下载 → 抽帧 → ASR 转写 |
-| `home_agent.py` | 反向轮询中继：云服务器排队任务，家里电脑取走执行（绕开机房 IP 限流） |
-| `selfcheck.py` | 离线自测套件（不连真实账号、不消耗 token） |
-
-## 关键设计
-
-1. **记忆不是关键字检索**：一条记忆被想起，会顺着突触把"经常一起出现"的关联记忆一起带出来；召回按"相对阈值 + 绝对阈值"双门槛截断，宁可返回 0 条也不塞噪音。
-2. **遗忘曲线用 FSRS 而不是指数衰减**：每条记忆维护稳定性 S，成功回忆会拉长 S（间隔效应），想不起来则衰减，每日定时巩固与复习。
-3. **单进程、单依赖**：整个机器人只用 `aiohttp`，不做插件化——单人使用场景下框架是过度设计。
-4. **可观测**：看门狗巡检 + 邮件告警 + 自动恢复；中继带代码版本握手，避免"改了代码忘了重启"。
+- 有人格（`persona.md`），会撒娇、会闹别扭、会吃醋
+- 有长期记忆：神经元网络 + 遗忘曲线（会被想起，也会慢慢淡）
+- 有边界：好感度门禁、作息规则、话题禁区、隐私隔离
+- 有多模态：看图、唱歌（换声）、看 B 站视频、发表情包、语音
+- 有主动性：会在合适的时候自己开口，也会在对方 5 天没回时安静下来
 
 ## 快速开始
 
 ```bash
+python -m venv .venv && . .venv/bin/activate   # Windows: .venv\Scripts\activate
 pip install -r requirements.txt
-cp .env.example .env      # 填入你自己的 API Key、OneBot 地址等
-python selfcheck.py       # 先跑离线自测
+cp .env.example .env        # 填 DEEPSEEK_API_KEY / DASHSCOPE_API_KEY / ONEBOT_* / OWNER_QQ
+docker run -d --name snowluma -p 127.0.0.1:3001:3001 \
+  -e ONEBOT_ACCESS_TOKEN=<同 .env> motricseven7/snowluma:latest
+python selfcheck.py         # 123 项，离线，不花 token
 python bot.py
 ```
 
-`.env` 里需要配置：LLM API（地址 / Key / 模型）、OneBot 接入地址与 token、可选的 TTS / 图像 / 中继配置。
+## 文档
 
-## 数据与隐私
+| 文档 | 看它做什么 |
+| --- | --- |
+| [docs/HANDOVER.md](docs/HANDOVER.md) | **从这里开始**：全貌、模块地图、六条不变量、优化路线 |
+| [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | 进程内结构、两条消息路径、家里中继协议、时序图 |
+| [docs/DATA-MODEL.md](docs/DATA-MODEL.md) | 所有数据结构的字段与算法（记忆/好感/情绪/规则/定时/曲库） |
+| [docs/OPERATIONS.md](docs/OPERATIONS.md) | 部署、systemd、docker、排障手册、备份 |
+| [docs/LESSONS.md](docs/LESSONS.md) | 13 个真实事故与教训（最值钱的部分） |
+| [CONTRIBUTING.md](CONTRIBUTING.md) | 改代码的流程与提交规范 |
+| [SECURITY.md](SECURITY.md) | 密钥与隐私边界，绝不能提交的东西 |
 
-本仓库**只包含代码**：
+## 结构
 
-- 不含任何聊天记录、记忆库、联系人、日志（`data/` 已在 `.gitignore` 中排除）
-- 不含真实 API Key、服务器地址、账号信息（配置全部走环境变量）
-- 人设文件 `persona.md` 是提示词设计示例，可替换为你自己的
+```
+bot.py            主干：事件 → 分发 → 生成 → 后处理 → 发送
+config.py         所有配置与阈值（全部走 .env）
+persona*.md       人设（改完重启即生效）
+neuron.py         记忆：节点/突触/扩散激活/遗忘曲线
+memory.py         短期窗口 + 摘要压缩
+affection.py      好感度：分档、衰减、门禁、行为后处理
+mood.py           瞬时情绪与生闷气
+rules.py          自然语言 → 结构化规则（作息/话题/定时）
+remind.py         定时队列
+sing.py           唱歌流水线（在家里电脑执行）
+songlib.py        曲库：已做好的切片缓存
+home_agent.py     家里电脑的 worker（领活/交活）
+selfcheck.py      离线自测（123 项）
+```
 
-## 技术栈
+## 依赖
 
-Python 3.10 · asyncio · aiohttp · SQLite · OneBot v11 · ONNX Runtime · ZipVoice / 通义万相 · FFmpeg · Docker / systemd
+必需只有 `aiohttp`。可选：`httpx`（embedding）、`numpy`（向量）、
+`librosa`+`torch`+`demucs`（仅家里电脑唱歌用）。
+
+## 许可
+
+MIT，见 [LICENSE](LICENSE)。

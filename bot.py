@@ -103,7 +103,7 @@ _FRAME_HINTS = (
 
 
 def _qq_of(cid: str) -> int:
-    """从会话 id（u10000000 / g123）里取出 QQ 号。"""
+    """从会话 id（u1000000001 / g123）里取出 QQ 号。"""
     digits = "".join(ch for ch in str(cid) if ch.isdigit())
     return int(digits) if digits else 0
 
@@ -340,8 +340,8 @@ def wants_watch_video(text: str) -> bool:
 def _owner_key(cid) -> str:
     """把会话 ID 归一成纯 QQ 号。
 
-    私聊会话的 cid 是 "u10000000"，群聊是 "g123456"，
-    而 OWNER_QQS 里是整数 10000000。统一成纯数字才能对上，
+    私聊会话的 cid 是 "u1000000001"，群聊是 "g123456"，
+    而 OWNER_QQS 里是整数 1000000001。统一成纯数字才能对上，
     否则"最后活跃时间""许可申请""待回复登记"这些表全部查不到。
     """
     return re.sub(r"^[ug]", "", str(cid))
@@ -1457,7 +1457,7 @@ class WhaleBot:
         """按 QQ 号或名字找人。返回 (cid, 错误提示)。找不到时 cid 为空、提示里带候选。"""
         raw = (arg or "").strip().replace("＠", "").replace("@", "").strip()
         if not raw:
-            return "", "要查谁呀？写成「/查好感 2122256110」这样，或者直接写名字"
+            return "", "要查谁呀？写成「/查好感 1000000011」这样，或者直接写名字"
         digits = re.sub(r"\D", "", raw)
         if digits and len(digits) >= 5:
             cid = f"u{digits}"
@@ -1503,8 +1503,155 @@ class WhaleBot:
                 value = float(self._CN_NUM[text])
                 note = f"（「{text}」我按 {int(value)} 算了）"
             else:
-                return 0.0, "分数得是数字呀，比如 /改好感 2122256110 +5"
+                return 0.0, "分数得是数字呀，比如 /改好感 1000000011 +5"
         return sign * value, note
+
+    # 关系是可以自由写的：女朋友/男朋友/妹妹/姐姐/老大…… 只按类别决定相处方式
+    _RELATION_KINDS = (
+        ("lover", ("女朋友", "男友", "男朋友", "女友", "恋人", "对象", "情侣",
+                   "老公", "老婆", "未婚妻", "未婚夫")),
+        ("family", ("妹妹", "姐姐", "哥哥", "弟弟", "女儿", "儿子")),
+        # 只把"真的就是朋友"的放这一档。同学/同事/网友走 other + 预设，
+        # 否则它们拿不到具体语气（同学不该用「您」，网友不该自来熟）。
+        ("friend", ("朋友", "基友", "闺蜜")),
+    )
+    # 老版本存过英文，读的时候统一换回中文，别把 "friend" 当成一个自定义身份
+    _LABEL_ALIASES = {"friend": "朋友", "lover": "恋人", "owner": "主人",
+                      "family": "家人", "other": "朋友"}
+    _FEMALE_HINTS = ("女", "妹", "姐", "妈", "婆", "娘", "姑", "婶", "母")
+    _MALE_HINTS = ("男", "哥", "弟", "爸", "公", "叔", "爷", "兄", "父")
+
+    def _kind_of_label(self, label: str) -> str:
+        """把一个自由写的关系词归到一类：lover / family / friend / other。"""
+        low = (self._LABEL_ALIASES.get((label or "").strip().lower())
+               or (label or "")).strip().lower()
+        if not low:
+            return "friend"
+        for kind, words in self._RELATION_KINDS:
+            if any(w in low for w in words):
+                return kind
+        return "other"
+
+    def _gender_of_label(self, label: str) -> str:
+        """从关系词本身猜性别：女朋友→她，男朋友→他，猜不出返回空。"""
+        for ch in (label or ""):
+            if ch in self._FEMALE_HINTS:
+                return "f"
+            if ch in self._MALE_HINTS:
+                return "m"
+        return ""
+
+    # 自定义身份的具体语气。光写"按这个身份相处"压不住她的默认性格，
+    # 所以常见身份直接给：怎么说话 + 必须守住什么。
+    _SOCIAL_PRESETS = (
+        (("老师", "导师", "教授"), ("用「您」，说话收敛，多请教、汇报进度",
+                                 "别撒娇、别用「宝宝」这类昵称、别提恋爱话题")),
+        (("同学", "校友"), ("同龄人随口聊，可以吐槽作业和课表，可以约自习",
+                          "别用「您」、别端着、别装乖")),
+        (("同事", "工友"), ("同事之间那种得体，聊工作、吐槽加班",
+                          "别撒娇、别叫老公老婆、别打听工资")),
+        (("上司", "老板", "领导", "主管"), ("简短、尊重，先说结论，别绕",
+                                        "别撒娇、别抱怨、别开玩笑过头")),
+        (("邻居",), ("见面打招呼那种熟，可以聊天气、楼道、借还东西",
+                   "别黏、别动不动说想你、别上门")),
+        (("长辈", "叔叔", "阿姨", "爷爷", "奶奶"), ("有礼貌，关心身体，多听少说",
+                                                "别用网络梗、别撒娇、别说教")),
+        (("陌生人", "网友"), ("客气、简短、不主动打听隐私",
+                           "别自来熟、别问住址电话、别默认很熟")),
+        (("学长", "学姐"), ("带着一点仰慕但别过分，可以请教经验",
+                          "别撒娇、别叫哥哥姐姐之外更亲的称呼")),
+        (("学弟", "学妹"), ("热心一点，可以带一带、讲讲怎么混",
+                          "别说教、别摆架子")),
+    )
+
+    def _social_preset(self, label: str):
+        """按关系词给一套（语气, 必须守住），认不出来返回 None。"""
+        text = (label or "").strip()
+        if not text:
+            return None
+        for words, preset in self._SOCIAL_PRESETS:
+            if any(w in text for w in words):
+                return preset
+        return None
+
+    def _relation_admin(self, cid: str, arg: str) -> str:
+        """主人给某个人设关系，关系词随便写。
+
+        /设关系 QQ号 女朋友     ← 她认这个人做女朋友
+        /设关系 QQ号 男朋友
+        /设关系 QQ号 妹妹       ← 也能是亲情/其他身份
+        /设关系 QQ号 老大
+        /设关系 QQ号 恋人 她    ← 关系词不带性别时，可以补一个「她/他」
+        /设关系 QQ号 朋友       ← 改回普通朋友
+        """
+        if not is_owner(cid):
+            return "这个指令得主人自己来"
+        bits = (arg or "").split()
+        if len(bits) < 2:
+            lines = ["现在的关系："]
+            for person, name in self._all_people():
+                qq = str(_qq_of(person))
+                if is_owner(person):
+                    rel = "主人（固定）"
+                else:
+                    rel = self._relation_label(person)
+                lines.append(
+                    f"· {(name or '还没问过名字').replace(f'（{qq}）', '')}"
+                    f"（{qq}）  {rel}"
+                )
+            lines += [
+                "",
+                "随便写关系词，比如：",
+                "  /设关系 QQ号 女朋友      /设关系 QQ号 男朋友",
+                "  /设关系 QQ号 妹妹        /设关系 QQ号 老大",
+                "  /设关系 QQ号 恋人 她     ← 关系词不带性别时补一个 她/他",
+                "  /设关系 QQ号 朋友        ← 改回普通朋友",
+            ]
+            return "\n".join(lines)
+
+        # 末尾的「她/他」可以当性别覆盖
+        gender = ""
+        if len(bits) >= 3 and bits[-1] in ("她", "女", "女生", "女孩子", "f"):
+            gender = "f"
+            bits = bits[:-1]
+        elif len(bits) >= 3 and bits[-1] in ("他", "男", "男生", "男孩子", "m"):
+            gender = "m"
+            bits = bits[:-1]
+
+        who, label = " ".join(bits[:-1]), bits[-1].strip("「」\"' ")
+        person, err = self._resolve_person(who)
+        if err:
+            return err
+        if is_owner(person):
+            return "这是你自己，不用设——她一直叫你爸爸"
+
+        if label in ("朋友", "普通朋友", "friend", "取消", "分手", "重置"):
+            self._set_relation(person, "friend", "")
+            name = self._contact_name(person) or str(_qq_of(person))
+            return f"好，{name} 改回普通朋友了，她又会客气一点。"
+
+        if not label or len(label) > 12:
+            return "关系词没看懂，写短一点，比如：/设关系 1000000011 女朋友"
+
+        kind = self._kind_of_label(label)
+        if not gender:
+            gender = self._gender_of_label(label)
+        self._set_relation(person, label, gender)
+
+        name = self._contact_name(person) or str(_qq_of(person))
+        gtxt = {"f": "，她", "m": "，他"}.get(gender, "")
+        extra = {
+            "lover": "她会主动说想你、撒娇吃醋，被问「我们什么关系」也不会打岔了。",
+            "family": "她会照这个身份相处，说话带点亲近的口气。",
+            "other": "她会照这个身份称呼你、顺着相处。",
+            "friend": "她还是普通朋友的语气。",
+        }[kind]
+        return (
+            f"好，从现在起 {name} 是你的「{label}」{gtxt}。\n"
+            f"{extra}\n"
+            f"要改回来：/设关系 {_qq_of(person)} 朋友\n"
+            f"要补性别：/设关系 {_qq_of(person)} {label} 她  （或 他）"
+        )
 
     def _affection_admin(self, cid: str, cmd: str, arg: str) -> str:
         """处理 /查好感 和 /改好感 这一族。返回要发回去的话。"""
@@ -1597,7 +1744,7 @@ class WhaleBot:
             )
 
         if want == 0:
-            return "分数得是数字呀，比如「/改好感 2122256110 +5」。加就写 +5，减就写 -3"
+            return "分数得是数字呀，比如「/改好感 1000000011 +5」。加就写 +5，减就写 -3"
 
         person, err = self._resolve_person(person_arg)
         if err:
@@ -1641,8 +1788,9 @@ class WhaleBot:
         ("/好感度", "看现在多少分、解锁了什么、为什么涨", False),
         ("/心情", "看她现在什么情绪、为什么、怎么哄", False),
         ("/事件", "看她记下的事：几点别找、约好几点叫你", False),
+        ("/设关系 谁 恋人", "把某个人设成她男朋友（恋人）；改回朋友就发 /设关系 谁 朋友", True),
         ("/查好感 [谁]", "看所有人的好感度；带 QQ 号或名字看细节", True),
-        ("/改好感 谁 ±N", "手动加减某个人的好感度（例：/改好感 2122256110 +5）", True),
+        ("/改好感 谁 ±N", "手动加减某个人的好感度（例：/改好感 1000000011 +5）", True),
         ("/公告 内容", "给所有朋友发一条通知（发完报结果）", True),
         ("/加朋友 QQ号", "把某人加进白名单，对方再申请好友会自动通过", True),
         ("/删朋友 QQ号", "从白名单移除", True),
@@ -1817,6 +1965,9 @@ class WhaleBot:
                     arg = arg.strip()
             await self.send(mtype, uid, group_id, self._affection_admin(cid, actual, arg))
             return True
+        if cmd in ("/设关系", "/关系", "/setrelation"):
+            await self.send(mtype, uid, group_id, self._relation_admin(cid, arg))
+            return True
         if cmd in ("/叫我", "/称呼", "/叫我吧", "/rename"):
             want = arg.strip().strip("「」\"'“” ")
             if not want:
@@ -1940,6 +2091,64 @@ class WhaleBot:
         extra_context: str | None = None,
     ) -> list[dict]:
         msgs = [{"role": "system", "content": self.persona_friend if is_friend(cid) else self.persona}]
+
+        # 关系由主人用 /设关系 指定，关系词随便写（女朋友/男朋友/妹妹/老大…），
+        # 这里按"类别"决定相处方式。没设 = 普通朋友。
+        try:
+            kind = self._relation(cid)
+            label = self._relation_label(cid)
+            g = self._gender(cid)
+        except Exception:
+            kind, label, g = "friend", "朋友", ""
+        if kind in ("lover", "family", "other"):
+            pronoun = {"f": "她", "m": "他"}.get(g, "对方")
+            base = (
+                f"【你和{pronoun}的关系】对方是你的「{label}」。这一条覆盖上面"
+                "所有「只是朋友」的默认设定。"
+            )
+            if kind == "lover":
+                call = (
+                    "叫她「老婆」" if g == "f" else "叫他「老公」" if g == "m"
+                    else "称呼跟着对方的习惯"
+                )
+                body = (
+                    f"可以主动说想{pronoun}、撒娇、吃醋、要抱抱，{call}，但别每句都喊；"
+                    f"{pronoun}问你喜不喜欢{pronoun}、问你们什么关系，"
+                    "**不许打岔、不许回避、不许含糊**，直接给明确的答案；"
+                    f"{pronoun}说想你了就回应想{pronoun}，不要转开话题。"
+                    "边界：不写露骨性描写，不承诺现实里做不到的事（见面、同居之类只说期待）。"
+                )
+            elif kind == "family":
+                body = (
+                    f"按「{label}」这个身份相处：说话可以亲近、可以管着{pronoun}一点、"
+                    f"会关心{pronoun}，但**不往恋爱的方向演**；"
+                    f"{pronoun}问起你们的关系，直接说「{label}」就好，别含糊。"
+                )
+            else:
+                # 自定义身份（同学/老师/邻居/老大…）：光给一句"按这个身份相处"
+                # 压不住她黏人的默认性格（好感度那次就栽在这上面），
+                # 常见身份给具体的语气 + 禁止清单；认不出来的才退回泛化说法。
+                preset = self._social_preset(label)
+                if preset:
+                    tone, avoid = preset
+                    body = (
+                        f"按「{label}」这个身份相处：{tone}。"
+                        f"**必须守住**：{avoid}。"
+                        f"{pronoun}问你们什么关系，直接说「{label}」，别打岔。"
+                    )
+                else:
+                    body = (
+                        f"按「{label}」这个身份相处，称呼和口气都跟着这个身份来；"
+                        "不确定该怎么称呼就先问一句（「我该怎么叫你呀」），别自己乱起。"
+                        f"{pronoun}问你们什么关系，直接照实说，别打岔。"
+                    )
+            if g not in ("f", "m"):
+                base = (
+                    f"【你们的关系】对方是你的「{label}」。这一条覆盖上面"
+                    "所有「只是朋友」的默认设定。"
+                    "对方是男是女，以对方自己说的为准，**你不要替对方定性别、也别问**。"
+                )
+            msgs.append({"role": "system", "content": base + body})
 
         # 已经知道他喜欢被怎么叫了，就照那个叫
         if is_friend(cid):
@@ -2726,7 +2935,8 @@ class WhaleBot:
             lines.append(f"曲库：读不出来（{type(exc).__name__}）")
 
         try:
-            lines.append(f"记忆：{len(self.mem.history('u10000000'))} 条")
+            _owner = sorted(config.OWNER_QQS)[0] if config.OWNER_QQS else ""
+            lines.append(f"记忆：{len(self.mem.history(f'u{_owner}'))} 条")
         except Exception:
             lines.append("记忆：读不出来")
 
@@ -3089,6 +3299,39 @@ class WhaleBot:
             )
         return "\n".join(kept)
 
+    def _relation(self, cid: str) -> str:
+        """这个人在她心里的**类别**：owner / lover / family / friend / other。
+
+        `relation` 字段里存的是主人写的关系词本身（女朋友/妹妹/老大…），
+        这里把它归成类别，相处方式按类别走。
+        """
+        if is_owner(cid):
+            return "owner"
+        label = str((self._contact(cid) or {}).get("relation") or "").strip()
+        if not label:
+            return "friend"
+        return self._kind_of_label(label)
+
+    def _relation_label(self, cid: str) -> str:
+        """展示用的关系词（女朋友 / 妹妹 / 老大 / 朋友）。"""
+        if is_owner(cid):
+            return "主人（固定）"
+        label = str((self._contact(cid) or {}).get("relation") or "").strip()
+        if not label:
+            return "朋友"
+        return self._LABEL_ALIASES.get(label.lower(), label)
+
+    def _gender(self, cid: str) -> str:
+        """对方性别：f / m / 空（没设，就不预设）。"""
+        rec = self._contact(cid) or {}
+        return str(rec.get("gender") or "") or self._gender_of_label(
+            str(rec.get("relation") or "")
+        )
+
+    def _set_relation(self, cid: str, relation: str, gender: str = "") -> None:
+        """relation 传关系词本身（"女朋友"/"朋友"…），类别由 _kind_of_label 推。"""
+        self._set_contact(cid, relation=relation, gender=gender or "")
+
     def _contact(self, cid: str) -> dict:
         return self._contacts.get(str(_qq_of(cid))) or {}
 
@@ -3101,6 +3344,25 @@ class WhaleBot:
         record.update(fields)
         self._contacts[key] = record
         self._save_contacts()
+
+    def _touch_incoming(self, cid: str) -> None:
+        """记下"他最后一次主动说话"的时间。用于"太久没回就不再打扰"。
+
+        只在值变化超过 1 小时时才落盘，避免每条消息都写 contacts.json。
+        """
+        try:
+            now = time.time()
+            rec = self._contact(cid)
+            last = float(rec.get("last_incoming") or 0)
+            if now - last < 3600:
+                return
+            key = str(_qq_of(cid))
+            record = dict(self._contacts.get(key) or {})
+            record["last_incoming"] = now
+            self._contacts[key] = record
+            self._save_contacts()
+        except Exception as exc:
+            log.debug("记最后说话时间失败：%s", exc)
 
     @staticmethod
     def _extract_name(text: str) -> str:
@@ -4131,6 +4393,9 @@ class WhaleBot:
         for qq in sorted(config.FRIEND_QQS):
             if qq in config.OWNER_QQS:
                 continue
+            # .env 里混进过 0 这种脏号码，别真去发
+            if int(qq) <= 10000:
+                continue
             cid = f"u{qq}"
             key = _owner_key(cid)
             idle = now - self._last_active.get(key, 0.0)
@@ -4141,6 +4406,20 @@ class WhaleBot:
             if record.get("dnd"):
                 continue
             if record.get("unreachable"):
+                continue
+
+            # 他连续 N 天没回过话 → 不再主动找他（用户 2026-11-09 要求：5 天）。
+            # 用"他上次说话"判断，不是用"我们上次说话"——否则我们自己发的消息
+            # 也会把计时清零，永远停不下来。
+            # 一开口就自动恢复：下次他说话时 last_incoming 会刷新。
+            last_in = float(record.get("last_incoming") or 0)
+            last_any = float(self._last_active.get(key) or 0)
+            last_he = max(last_in, last_any)
+            if last_he and (now - last_he) >= config.FRIEND_SILENT_STOP_DAYS * 86400:
+                log.info(
+                    "[%s] 他 %d 天没回过话了（阈值 %d 天），不再主动找他",
+                    cid, int((now - last_he) // 86400), config.FRIEND_SILENT_STOP_DAYS,
+                )
                 continue
             try:
                 ok_rule, why_rule = rules.allows_proactive(cid, now)
@@ -4703,6 +4982,11 @@ class WhaleBot:
             # 隔了多久才重新开口：超过阈值就该换话题（用户 2026-11-01 提的需求）
             self._topic_gap = (time.time() - _prev) if _prev else 0.0
             self._last_active[_key] = time.time()
+
+            # 他"本人"说话的记录（不含她自己的主动/补话）。
+            # 用来判断"多久没被回应"：连续 5 天没回就别再主动找了。
+            if not synthetic:
+                self._touch_incoming(cid)
 
             # 谁都能开关勿扰
             if not synthetic and (user_text or "").strip().startswith("/"):

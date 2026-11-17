@@ -129,6 +129,9 @@ FRIEND_PROACTIVE_MIN_MINUTES = _int("FRIEND_PROACTIVE_MIN_MINUTES", 180)
 FRIEND_PROACTIVE_MAX_MINUTES = _int("FRIEND_PROACTIVE_MAX_MINUTES", 360)
 # 每个朋友一天最多被主动找几次（防刷、防风控）
 FRIEND_PROACTIVE_MAX_PER_DAY = _int("FRIEND_PROACTIVE_MAX_PER_DAY", 5)
+# 对方连续多少天没回过话，就不再主动找他（用户 2026-11-09 要求：5 天）
+# 一开口就自动恢复，不用手动解封
+FRIEND_SILENT_STOP_DAYS = _int("FRIEND_SILENT_STOP_DAYS", 5)
 # 凌晨也算能开口，但内容必须对得上时间（用户要求）
 PROACTIVE_ALLOW_NIGHT = _flag("PROACTIVE_ALLOW_NIGHT", True)
 # 把回复拆成 1~3 条短消息发出去，更像真人打字

@@ -1,7 +1,7 @@
 """记忆云的「可编辑版」—— 浏览器里点一个节点就能改它。
 
     python neuron_edit.py            # 起服务并自动开浏览器（默认看主人的网）
-    python neuron_edit.py --cid u2122256110
+    python neuron_edit.py --cid u1000000011
     python neuron_edit.py --port 8099
 
 改完点「保存」，直接写进本地 data/neuron.db。

@@ -1,6 +1,6 @@
 """把 memory.json 里的旧聊天记录，提炼成神经元记忆节点。
 
-    python neuron_import.py --cid u10000000        # 只导一个人
+    python neuron_import.py --cid u1000000001        # 只导一个人
     python neuron_import.py --all --limit 200       # 全导，每人最多 200 条
     python neuron_import.py --all --dry             # 只看会提出什么，不写库
 

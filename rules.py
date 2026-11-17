@@ -161,7 +161,13 @@ def _clean(raw: dict) -> dict:
                        "note": str(item.get("note") or "")[:60]})
 
     return {
-        "no_sticker": bool(raw.get("no_sticker")),
+        # 关键：模型**没提这件事**时必须给 None，不能给 False。
+        # False 的语义是"他说可以发"，会把之前设的"别发表情包"冲掉。
+        # （GitHub issue #1 @mattabate 指出：_clean 永远返回 bool，
+        #   save() 里 is not None 的判断就形同虚设）
+        "no_sticker": (
+            None if "no_sticker" not in raw else bool(raw.get("no_sticker"))
+        ),
         "remind": remind,
         "topics": topics,
         "quiet": quiet,
@@ -260,9 +266,13 @@ def save(cid: str, parsed: dict, note: str = "") -> None:
     if parsed.get("topics"):
         # 新说的覆盖旧的（他说"别聊 X"就是整个换掉）
         rec["topics"] = parsed["topics"]
-    # 注意：这里必须区分"没提"和"说可以了"——
-    # 只写 if parsed.get("no_sticker") 的话，永远只能禁、不能解禁（踩过）
-    if "no_sticker" in parsed and parsed["no_sticker"] is not None:
+    # 三种情况要分清：
+    #   字段不存在 / 是 None → 他这次没提，**别动**原来的设置
+    #   True                → 禁
+    #   False               → 解禁（他说"可以发了"）
+    # 只写 if parsed.get("no_sticker") 会变成"只能禁、不能解禁"（踩过）；
+    # 而如果 _clean 永远给 False，又会变成"提别的事就把禁言冲掉"（issue #1）。
+    if parsed.get("no_sticker") is not None:
         rec["no_sticker"] = bool(parsed["no_sticker"])
     rec["note"] = note or parsed.get("summary") or rec.get("note") or ""
     rec["pending"] = None
