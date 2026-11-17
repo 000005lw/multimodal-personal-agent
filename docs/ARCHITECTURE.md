@@ -31,6 +31,8 @@ WhaleBot
 ├── 生成层
 │   ├── build_messages()  拼 system 提示词（人设/关系/记忆/事实/历史）
 │   ├── llm.chat()        DeepSeek
+│   ├── action_protocol   纯解析动作并清理正文
+│   ├── action_runtime    歌单/贴图/自查权限与 trace
 │   └── 后处理流水线       见 HANDOVER §5
 ├── 子系统（每个一个模块）
 │   ├── memory + neuron   记忆
@@ -87,7 +89,7 @@ WhaleBot
 
 ```
 服务器                                  家里电脑（whale-relay.py）
-  ├── GET  /jobs/poll?token=…&v=<版本>  ←── 每 1.5 秒轮询
+  ├── GET  /jobs/poll?v=<版本>         ←── 每 1.5 秒轮询（X-Home-Token）
   │       返回 {"job": {"id","kind","query","segment",…}}
   ├── POST /jobs/result                 ←── 做完交作业（最多重试 40×3s）
   │       返回 {"dup": true}（幂等：同一 job 只处理一次）

@@ -35,6 +35,9 @@
 | `OWNER_QQ` | ✅ | 主人 QQ（单个） |
 | `FRIEND_QQ` | | 朋友白名单，逗号分隔 |
 | `HOME_TOKEN` | | 家里电脑领活用的 token |
+| `ACTIONS_V2` | | 轻量工具运行时开关，默认关闭 |
+| `ACTION_TRACE_ENABLED` | | 是否记录脱敏动作 trace，默认开启 |
+| `ACTION_TRACE_FILE` | | trace 文件名，默认 `action_trace.jsonl` |
 | `SMTP_*` | | 掉线邮件通知（可选） |
 | `TOPIC_RESET_MIN` | | 隔多久换话题，默认 45 |
 | `FRIEND_SILENT_STOP_DAYS` | | 朋友几天没回就静音，默认 5 |
@@ -94,7 +97,7 @@ journalctl --user -u whale-bot -f
 
 ```bash
 # 本地
-python selfcheck.py           # 必须 123/123
+python selfcheck.py           # 必须 159/159
 # 服务器
 git pull && systemctl --user restart whale-bot
 journalctl --user -u whale-bot -n 30      # 确认没有 Traceback
@@ -151,6 +154,9 @@ python -c "import songlib; print(songlib.count()); print(songlib.listing()[:3])"
 
 # 自测（离线、不花钱）
 python selfcheck.py
+
+# 36 条合成 Agent 动作回放
+python tools/action_replay.py
 ```
 
 ---
@@ -182,7 +188,7 @@ tar czf whale-data-$(date +%F).tar.gz data/
 ## 9. 上线检查单
 
 - [ ] `.env` 齐全，且**没有**把 `.env` 提交进仓库
-- [ ] `python selfcheck.py` → 123/123
+- [ ] `python selfcheck.py` → 159/159
 - [ ] OneBot `get_status` 为 online
 - [ ] 主人在 QQ 里发 `/指令` 有回应
 - [ ] 白名单外的号发消息**无任何回应**

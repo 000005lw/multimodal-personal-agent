@@ -11,12 +11,10 @@ import time
 import urllib.error
 import urllib.request
 
-# 机器人代码所在目录
-WORKSPACE = r"C:\Users\86173\Documents\deepseek-harness\default-workspace\whale-bot"
-
-SERVER = "ubuntu@YOUR_SERVER_IP"
-LOCAL_PORT = 8091
-REMOTE = "127.0.0.1:8090"
+# 默认使用当前仓库目录，也允许通过环境变量覆盖
+WORKSPACE = os.environ.get("WHALE_WORKSPACE") or os.path.dirname(
+    os.path.dirname(os.path.abspath(__file__))
+)
 
 try:
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
@@ -27,6 +25,12 @@ sys.path.insert(0, WORKSPACE)
 os.chdir(WORKSPACE)
 
 import home_agent  # noqa: E402  复用里面的抓取逻辑
+
+# home_agent imports config, which loads .env before these values are read.
+SERVER = os.environ.get("HOME_SSH_TARGET", "").strip()
+SSH_PORT = os.environ.get("HOME_SSH_PORT", "").strip()
+LOCAL_PORT = int(os.environ.get("HOME_RELAY_PORT", "8091"))
+REMOTE = os.environ.get("HOME_REMOTE", "127.0.0.1:8090").strip()
 
 
 def banner(text):
@@ -50,8 +54,10 @@ def start_tunnel():
         # 有密钥就走密钥，不会卡在密码提示上；没有密钥会立刻失败而不是干等
         "-o", "BatchMode=yes",
         "-L", f"{LOCAL_PORT}:{REMOTE}",
-        SERVER,
     ]
+    if SSH_PORT:
+        cmd.extend(["-p", SSH_PORT])
+    cmd.append(SERVER)
     print(f"[隧道] 正在连接 {SERVER} …")
     return subprocess.Popen(cmd)
 
@@ -148,6 +154,16 @@ def main():
     print("  这个窗口别关，关了她就借不到你的网了")
     print("  按 Ctrl+C 退出")
     print()
+
+    if not SERVER:
+        print("[!] 缺少 HOME_SSH_TARGET：请填写 ubuntu@你的服务器地址")
+        return 2
+
+    try:
+        home_agent.ensure_config()
+    except RuntimeError as exc:
+        print(f"[!] {exc}")
+        return 2
 
     flush_pending()
 
@@ -250,4 +266,4 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

@@ -16,7 +16,8 @@ pip install -r requirements.txt
 cp .env.example .env        # 填 DEEPSEEK_API_KEY / DASHSCOPE_API_KEY / ONEBOT_* / OWNER_QQ
 docker run -d --name snowluma -p 127.0.0.1:3001:3001 \
   -e ONEBOT_ACCESS_TOKEN=<同 .env> motricseven7/snowluma:latest
-python selfcheck.py         # 123 项，离线，不花 token
+python selfcheck.py         # 159 项，离线，不花 token
+python tools/action_replay.py  # 36 条合成 Agent 动作场景
 python bot.py
 ```
 
@@ -38,6 +39,8 @@ python bot.py
 bot.py            主干：事件 → 分发 → 生成 → 后处理 → 发送
 config.py         所有配置与阈值（全部走 .env）
 persona*.md       人设（改完重启即生效）
+action_protocol.py 旧式动作标记的纯解析层（无副作用）
+action_runtime.py 三工具权限策略、执行状态与脱敏 trace
 neuron.py         记忆：节点/突触/扩散激活/遗忘曲线
 memory.py         短期窗口 + 摘要压缩
 affection.py      好感度：分档、衰减、门禁、行为后处理
@@ -47,7 +50,7 @@ remind.py         定时队列
 sing.py           唱歌流水线（在家里电脑执行）
 songlib.py        曲库：已做好的切片缓存
 home_agent.py     家里电脑的 worker（领活/交活）
-selfcheck.py      离线自测（123 项）
+selfcheck.py      离线自测（159 项）
 ````
 
 ## 依赖

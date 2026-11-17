@@ -30,7 +30,9 @@ VOICE_DIR = config.DATA_DIR / "voice"
 
 # espeak 碰到表情、特殊符号容易吐坏音频；腾讯云也不喜欢奇怪字符。
 # 合成前先把不属于「中文 + 常见标点 + 基本英文数字」的东西清掉。
-_ALLOWED = re.compile(r"[^\u4e00-\u9fff\u3400-\u4dbfA-Za-z0-9，。！？、；：""''（）《》…—～\-\s]")
+_ALLOWED = re.compile(
+    r"""[^\u4e00-\u9fff\u3400-\u4dbfA-Za-z0-9，。！？、；："'（）《》…—～\s-]"""
+)
 
 
 class TTSError(RuntimeError):

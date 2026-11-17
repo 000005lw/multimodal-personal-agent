@@ -45,7 +45,19 @@ class Memory:
         tmp.write_text(
             json.dumps(self._data, ensure_ascii=False, indent=2), encoding="utf-8"
         )
-        os.replace(tmp, self.path)
+        # Windows antivirus/indexers can briefly open a just-written file and
+        # make os.replace fail with PermissionError. Retry instead of losing
+        # the memory update or making the offline test flaky.
+        delays = (0.0, 0.01, 0.03, 0.08, 0.15)
+        for index, delay in enumerate(delays):
+            if delay:
+                time.sleep(delay)
+            try:
+                os.replace(tmp, self.path)
+                return
+            except PermissionError:
+                if index == len(delays) - 1:
+                    raise
 
     def _archive(self, cid: str, role: str, content: str) -> None:
         """追加到完整归档。失败也不能影响正常对话，所以吞掉异常。"""

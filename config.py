@@ -105,6 +105,12 @@ MAX_HISTORY_CHARS = _int("MAX_HISTORY_CHARS", 40000)
 SUMMARY_MAX_CHARS = _int("SUMMARY_MAX_CHARS", 1500)
 MAX_REPLY_CHARS = _int("MAX_REPLY_CHARS", 900)
 SIMULATE_TYPING = _flag("SIMULATE_TYPING", True)
+
+# 轻量工具运行时。默认关闭，先通过 selfcheck/回放验证再逐步启用。
+ACTIONS_V2 = _flag("ACTIONS_V2", False)
+ACTION_TRACE_ENABLED = _flag("ACTION_TRACE_ENABLED", True)
+ACTION_TRACE_FILE = _get("ACTION_TRACE_FILE", "action_trace.jsonl")
+
 # 收到消息后先"想一下"多久才开口（秒）。调大就更像真人，不是秒回。
 REPLY_PAUSE_MIN = _float("REPLY_PAUSE_MIN", 2.0)
 REPLY_PAUSE_MAX = _float("REPLY_PAUSE_MAX", 4.5)
