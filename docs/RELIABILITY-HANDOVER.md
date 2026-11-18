@@ -2,9 +2,9 @@
 
 > 交接日期：2026-11-18
 >
-> 分支：`codex/final-agent-reliability`
+> 当前分支：`main@8d25d806464e27e30866edfc4d702edb73786b7a`
 >
-> 基线：`main@8010343a7f9a023f45192c037b7a3117a42ed200`
+> 原始基线：`main@8010343a7f9a023f45192c037b7a3117a42ed200`
 
 本文给下一位开发者说明本轮改了什么、怎么测试、上线时注意什么，以及哪些问题不要误解。
 
@@ -13,7 +13,7 @@
 ## 1. 快速验证
 
 ```bash
-python -W error::SyntaxWarning -m compileall -q whale/bot.py whale scripts tools
+python -W error::SyntaxWarning -m compileall -q bot.py whale scripts tools
 
 python scripts/selfcheck.py
 python tools/action_replay.py --json
@@ -30,7 +30,34 @@ reliability check: 15/15
 
 所有测试都不访问真实 QQ、DeepSeek、家庭电脑或生产数据库。
 
+GitHub Actions 最新验证：
+
+```text
+run 44293363848
+head 8d25d806464e27e30866edfc4d702edb73786b7a
+conclusion success
+```
+
 ---
+
+## 1.1 当前目录
+
+```text
+bot.py                  稳定入口，内部调用 whale.bot:main()
+whale/agent/            动作、运行时、台账和 LLM
+whale/memory/           对话摘要与神经元记忆
+whale/relationship/     好感度、情绪与性格
+whale/behavior/         规则与定时
+whale/media/            语音、唱歌、图片和媒体
+whale/integrations/     OneBot、家庭 worker、邮件和系统检查
+scripts/                selfcheck、曲库、记忆和运维脚本
+assets/                 人设与歌单
+tools/                  家庭中继和离线回放
+docs/                   技术文档
+legal/MIT.txt           许可证正文
+```
+
+根目录不应再新增源码模块。业务模块放 `whale/`，一次性脚本放 `scripts/`，人工资源放 `assets/`。
 
 ## 2. 新增数据文件
 

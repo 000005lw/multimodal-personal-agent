@@ -2,7 +2,9 @@
 
 > 基线：`main@8010343a7f9a023f45192c037b7a3117a42ed200`
 >
-> 本轮分支：`codex/final-agent-reliability`
+> 当前合并提交：`main@8d25d806464e27e30866edfc4d702edb73786b7a`
+>
+> 可靠性分支：`codex/final-agent-reliability`
 >
 > 目的：在保持单进程 Python、2GB 服务器、aiohttp、SQLite 和家庭电脑中继架构不变的前提下，补齐 Agent 动作生命周期、数据隔离、任务恢复和异步检索可靠性。
 
@@ -104,6 +106,23 @@ app["delivered"] set
 ### 2.7 relay token 仍兼容 URL query
 
 中继实际已经使用 `X-Home-Token`，但服务端 `_check_home_token()` 仍接受 query token。为了减少代理和访问日志泄露面，本轮移除了该兼容入口。
+
+### 2.8 仓库根目录混放源码、脚本、人设和历史文件
+
+接手时根目录同时放着 20 多个 Python 模块、运维脚本、人设、歌单、许可证和重复交接文档。这种平铺结构会出现几个问题：
+
+- 核心模块、一次性脚本和运行入口混在一起， GitHub 首页无法快速看出项目结构。
+- 脚本移动后很容易遗漏 import 或相对路径。
+- GitHub 会因为根目录存在 `CONTRIBUTING.md`、`SECURITY.md`、`LICENSE` 自动生成额外标签页。
+- `FOR-CONTRIBUTOR.md` 与 `CONTRIBUTING.md` 内容重复，长期会出现两份文档不一致。
+
+当前已经重组为 `whale/` Python 包、`scripts/` 脚本目录、`assets/` 资源目录、`legal/` 许可证目录，并删除重复的贡献者文件。
+
+### 2.9 CI 情绪测试存在随机失败
+
+`emotion.consistent()` 对明确情绪仍保留 25% 的随机分支。测试连续采样 30 次并要求至少 20 次返回“开心”，在 Linux CI 上实际出现过 18/30，导致 selfcheck 偶发失败。
+
+现在明确情绪会确定性返回对应分类，不再被随机概率覆盖。
 
 ---
 
@@ -277,6 +296,69 @@ pending/claimed
 
 没有真实生产 Embedding 延迟数据，因此不能宣称“P95 降低多少”。当前只能确认代码路径已经不再使用同步网络请求。
 
+## 3.5 仓库结构与 CI 修复
+
+### 目录重组
+
+当前主结构：
+
+```text
+bot.py                  稳定启动包装器
+whale/agent/            动作协议、运行时、台账、LLM
+whale/memory/           短期和长期记忆
+whale/relationship/     好感度、情绪、表情和性格快照
+whale/behavior/         规则与提醒
+whale/media/            语音、唱歌、图片和媒体
+whale/integrations/     OneBot、家庭 worker、邮件和系统状态
+scripts/                自测、曲库、记忆工具和运维脚本
+assets/                 人设和歌单
+legal/MIT.txt           MIT 许可证正文
+docs/                   架构、运维、安全和升级报告
+tools/                  家庭中继和离线回放
+```
+
+### GitHub 首页
+
+原先 GitHub 自动显示 README、Contributing、MIT license、Security 四个标签。
+这是 GitHub 对根目录 `CONTRIBUTING.md`、`LICENSE`、`SECURITY.md` 的自动识别。
+
+现在这些文件被迁移和改名：
+
+- `docs/DEVELOPMENT.md`
+- `docs/SECURITY-MODEL.md`
+- `legal/MIT.txt`
+
+GitHub 首页已确认只显示 README。
+
+### README
+
+README 已从功能罗列改成完整项目说明，包含：
+
+- 项目定位
+- 系统结构
+- 仓库目录
+- 快速开始
+- 配置
+- Agent 工具运行时
+- 家庭任务
+- 开发测试
+- 数据隐私
+- 部署
+- 文档索引
+- 当前限制
+
+### CI
+
+Workflow 现在直接编译整个 `bot.py + whale/ + scripts/ + tools/`，并运行：
+
+```text
+python scripts/selfcheck.py
+python tools/action_replay.py
+python tools/reliability_check.py
+```
+
+最新 GitHub Actions 运行已通过。
+
 ---
 
 ## 4. 参考了哪些设计
@@ -383,6 +465,14 @@ python tools/reliability_check.py
 - action replay
 - reliability check
 
+对应 GitHub Actions：
+
+```text
+run 44293363848
+head 8d25d806464e27e30866edfc4d702edb73786b7a
+conclusion success
+```
+
 ---
 
 ## 7. 当前仍然存在的限制
@@ -413,7 +503,7 @@ python tools/reliability_check.py
 
 ## 8. 可写进简历的内容
 
-以下内容只有在分支合并且真实测试结果保留后才应使用。
+以下内容已经随 `main@8d25d80` 合并，并有本地与 GitHub Actions 测试记录支撑。
 
 ### 版本一，偏工具调用
 
