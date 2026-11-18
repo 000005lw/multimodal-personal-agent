@@ -16,8 +16,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-import action_protocol  # noqa: E402
-import action_runtime  # noqa: E402
+from whale.agent import action_protocol, action_runtime  # noqa: E402
 
 
 SCENARIOS = ROOT / "tests" / "fixtures" / "agent_action_scenarios.jsonl"

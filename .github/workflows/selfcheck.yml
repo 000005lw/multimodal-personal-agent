@@ -18,13 +18,10 @@ jobs:
         run: python -m pip install -r requirements.txt
       - name: Compile
         run: |
-          python -W error::SyntaxWarning -m py_compile \
-            action_protocol.py action_runtime.py action_store.py job_store.py \
-            bot.py home_agent.py memory.py neuron.py selfcheck.py \
-            tools/action_replay.py tools/reliability_check.py \
-            tools/whale-relay.py voice.py
+          python -W error::SyntaxWarning -m compileall -q \
+            bot.py whale scripts tools
       - name: Offline selfcheck
-        run: python selfcheck.py
+        run: python scripts/selfcheck.py
       - name: Agent action replay
         run: python tools/action_replay.py
       - name: Reliability checks

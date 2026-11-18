@@ -13,7 +13,7 @@
 - OneBot v11 的 **HTTP 上报 + HTTP 调用**已经够用：链路短、日志一行一条、断线交给后端重连；
 - 全项目必需依赖只有 `aiohttp`（+ 可选 `httpx`），2G 服务器装得下。
 
-代价：`bot.py` 越长越难维护（已 6200 行）。这是当前最大的技术债，见 §6。
+代价：`whale/bot.py` 越长越难维护（已 6200 行）。这是当前最大的技术债，见 §6。
 
 ---
 
@@ -51,7 +51,7 @@ WhaleBot
     └── _neuron_shadow_loop 每天 05:00
 ```
 
-**依赖方向是单向的**：`bot.py` 依赖所有模块；模块之间尽量互不依赖
+**依赖方向是单向的**：`whale/bot.py` 依赖所有模块；模块之间尽量互不依赖
 （例外：`songlib` 读 `config`；`neuron` 读 `config`；`rules`/`remind` 互不依赖）。
 
 ---
@@ -123,7 +123,7 @@ pending -> claimed -> result_ready -> delivering -> consumed
 
 ## 6. 已知结构问题（优化入口）
 
-### 6.1 `bot.py` 是巨石
+### 6.1 `whale/bot.py` 是巨石
 
 - `reply()` 单函数覆盖 400+ 行，承担：权限、勿扰、情绪、规则、记忆召回、生成、
   后处理、发送、记账。**建议拆分顺序**：

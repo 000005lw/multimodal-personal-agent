@@ -15,12 +15,10 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-import action_runtime  # noqa: E402
-import action_store  # noqa: E402
-import bot as botmod  # noqa: E402
-import config  # noqa: E402
-import job_store  # noqa: E402
-import neuron  # noqa: E402
+from whale import config  # noqa: E402
+from whale.agent import action_runtime, action_store, job_store  # noqa: E402
+from whale import bot as botmod  # noqa: E402
+from whale.memory import neuron  # noqa: E402
 
 
 OWNER = {

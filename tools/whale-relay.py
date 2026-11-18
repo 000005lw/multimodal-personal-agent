@@ -24,7 +24,7 @@ except Exception:
 sys.path.insert(0, WORKSPACE)
 os.chdir(WORKSPACE)
 
-import home_agent  # noqa: E402  复用里面的抓取逻辑
+from whale.integrations import home_agent  # noqa: E402  复用里面的抓取逻辑
 
 # home_agent imports config, which loads .env before these values are read.
 SERVER = os.environ.get("HOME_SSH_TARGET", "").strip()

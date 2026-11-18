@@ -13,13 +13,9 @@
 ## 1. 快速验证
 
 ```bash
-python -W error::SyntaxWarning -m py_compile \
-  action_protocol.py action_runtime.py action_store.py job_store.py \
-  bot.py home_agent.py memory.py neuron.py selfcheck.py \
-  tools/action_replay.py tools/reliability_check.py \
-  tools/whale-relay.py voice.py
+python -W error::SyntaxWarning -m compileall -q whale/bot.py whale scripts tools
 
-python selfcheck.py
+python scripts/selfcheck.py
 python tools/action_replay.py --json
 python tools/reliability_check.py --json
 ```
@@ -285,7 +281,7 @@ GET /health
 
 1. 停服务并备份 `data/`。
 2. 部署新代码。
-3. 运行 `selfcheck.py`、`action_replay.py`、`reliability_check.py`。
+3. 运行 `scripts/selfcheck.py`、`tools/action_replay.py`、`tools/reliability_check.py`。
 4. 启动服务，观察 `neuron` 迁移日志。
 5. 检查 `/health` 的 jobs/actions 统计。
 6. 让主人在私聊中做一次 `/指令` 和普通聊天。
@@ -296,7 +292,7 @@ GET /health
 
 ## 9. 当前已知边界
 
-- `bot.py` 没有做全量拆分。
+- `whale/bot.py` 没有做全量拆分。
 - 动作和家庭任务使用两个 SQLite，不是统一事务。
 - 家庭 worker 没有 heartbeat，只依赖长租约。
 - 非音频结果在等待者丢失后保留在 `result_ready`，不会自动重建业务回调。
@@ -314,5 +310,5 @@ GET /health
 2. 动作台账与家庭任务台账的关联字段。
 3. 非音频任务的恢复回调。
 4. SQLite WAL/连接生命周期评估。
-5. `bot.py` 只做局部提取，不做一次性重构。
+5. `whale/bot.py` 只做局部提取，不做一次性重构。
 6. 在真实服务器上记录 P50/P95 和 RSS，再考虑性能结论。

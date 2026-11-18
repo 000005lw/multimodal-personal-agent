@@ -103,7 +103,7 @@ journalctl --user -u whale-bot -f
 
 ```bash
 # 本地
-python selfcheck.py           # 必须 159/159
+python scripts/selfcheck.py   # 必须 159/159
 # 服务器
 git pull && systemctl --user restart whale-bot
 journalctl --user -u whale-bot -n 30      # 确认没有 Traceback
@@ -126,7 +126,7 @@ python tools\whale-relay.py
 
 - 中继启动时会 `ssh -N -L 8091:127.0.0.1:8090 <server>`，
   **要求该机器的 SSH 公钥已加到服务器**（免密）；
-- 改了 `sing.py` / `home_agent.py` **必须重启中继窗口**，
+- 改了 `whale/media/sing.py` / `whale/integrations/home_agent.py` **必须重启中继窗口**，
   否则版本握手会提示“旧版程序”；
 - 断线不用管：中继会重连、结果落盘、下次启动补交。
 
@@ -156,10 +156,10 @@ journalctl --user -u whale-bot --since '10 min ago' | grep -E '\[u[0-9]+\]'
 tail -5 data/shadow_daily.jsonl
 
 # 曲库有多少首、有没有脏条目
-python -c "import songlib; print(songlib.count()); print(songlib.listing()[:3])"
+python -c "from whale.media import songlib; print(songlib.count()); print(songlib.listing()[:3])"
 
 # 自测（离线、不花钱）
-python selfcheck.py
+python scripts/selfcheck.py
 
 # 36 条合成 Agent 动作回放
 python tools/action_replay.py
@@ -198,7 +198,7 @@ tar czf whale-data-$(date +%F).tar.gz data/
 ## 9. 上线检查单
 
 - [ ] `.env` 齐全，且**没有**把 `.env` 提交进仓库
-- [ ] `python selfcheck.py` → 159/159
+- [ ] `python scripts/selfcheck.py` → 159/159
 - [ ] OneBot `get_status` 为 online
 - [ ] 主人在 QQ 里发 `/指令` 有回应
 - [ ] 白名单外的号发消息**无任何回应**

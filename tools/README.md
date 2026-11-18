@@ -17,10 +17,10 @@
 # 1) 先把本机 SSH 公钥加到服务器（免密）
 ssh-copy-id <user>@<your-server>
 
-# 2) 改 whale-relay.py 顶部的 SERVER / WORKSPACE 两行
+# 2) 配置 HOME_SSH_TARGET
 # 3) 起中继（保持窗口开着）
 python tools\whale-relay.py
 ```
 
-改了 `sing.py` / `home_agent.py` 之后**必须重启这个窗口**，
+改了 `whale/media/sing.py` / `whale/integrations/home_agent.py` 之后**必须重启这个窗口**，
 否则服务器会回「家里那个黑窗口还开着旧版程序」（版本握手）。

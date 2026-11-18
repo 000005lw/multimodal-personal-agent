@@ -148,7 +148,7 @@ COMMIT
 
 ## 3.2 PR-B：Agent 动作生命周期
 
-### 新增 `action_store.py`
+### 新增 `whale/agent/action_store.py`
 
 SQLite 表：
 
@@ -207,7 +207,7 @@ in_flight
 
 ## 3.3 PR-C：家庭任务持久化与恢复
 
-### 新增 `job_store.py`
+### 新增 `whale/agent/job_store.py`
 
 表：
 
@@ -342,7 +342,7 @@ pending/claimed
 ### 已有测试
 
 ```text
-python selfcheck.py
+python scripts/selfcheck.py
 159/159
 
 python tools/action_replay.py --json
@@ -387,7 +387,7 @@ python tools/reliability_check.py
 
 ## 7. 当前仍然存在的限制
 
-### 7.1 `bot.py` 仍然是巨石
+### 7.1 `whale/bot.py` 仍然是巨石
 
 本轮没有做全量重构。`reply()` 仍包含大量业务顺序和特殊路径。
 
@@ -458,12 +458,12 @@ python tools/reliability_check.py
 
 | 文件 | 说明 |
 | --- | --- |
-| `neuron.py` | 复合唯一约束、迁移、异步 Embedding、异步激活 |
-| `action_store.py` | SQLite 动作台账 |
-| `action_runtime.py` | 动作生命周期、交付语义、脱敏 Trace |
-| `job_store.py` | 家庭任务台账、租约、结果和消费状态 |
-| `bot.py` | 接入动作台账、任务台账、异步 recall、健康统计 |
-| `config.py` | 新增 runtime/job 配置 |
+| `whale/memory/neuron.py` | 复合唯一约束、迁移、异步 Embedding、异步激活 |
+| `whale/agent/action_store.py` | SQLite 动作台账 |
+| `whale/agent/action_runtime.py` | 动作生命周期、交付语义、脱敏 Trace |
+| `whale/agent/job_store.py` | 家庭任务台账、租约、结果和消费状态 |
+| `whale/bot.py` | 接入动作台账、任务台账、异步 recall、健康统计 |
+| `whale/config.py` | 新增 runtime/job 配置 |
 | `tools/action_replay.py` | 适配新动作状态 |
 | `tools/reliability_check.py` | 故障与迁移检查 |
 | `.github/workflows/selfcheck.yml` | 编译和可靠性 CI |

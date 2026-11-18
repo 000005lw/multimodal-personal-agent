@@ -4,7 +4,7 @@
 > 读者：接手本项目的开发者（你）以及任何新开的一次对话
 > **先说结论**：这是一个**把大模型接到 QQ 上的私人陪伴型 agent**，单进程 Python，
 > 跑在一台 2G 的云服务器上；重活（唱歌换声、抓 B 站视频）由一台家用电脑通过 SSH 隧道代跑。
-> 代码 6200 行的 `bot.py` 是主干，其余 30 多个模块是它的器官。
+> 代码 6200 行的 `whale/bot.py` 是主干，其余 30 多个模块是它的器官。
 
 > 2026-11-18 补充：当前分支新增了 SQLite 动作台账
 > `data/runtime.db`、家庭任务台账 `data/jobs.db`、异步 Embedding 热路径，
@@ -48,7 +48,7 @@
 ┌──────────────────────────────────────────┴────────────────┐
 │  云服务器（Ubuntu 22.04，2G 内存）                          │
 │  whale-bot.service（systemd --user）                       │
-│  bot.py：aiohttp 收上报 → 处理 → 调 DeepSeek → 调 3001 发送  │
+│  whale/bot.py：aiohttp 收上报 → 处理 → 调 DeepSeek → 调 3001 发送  │
 │  数据：data/*.json + data/neuron.db + data/songs/          │
 └────────────────────────────────────────────────────────────┘
 ```
@@ -67,7 +67,7 @@
 ```
 QQ 用户发消息
   → SnowLuma 收到 → POST http://<server>:8090/（OneBot v11 事件）
-  → bot.py 的 web handler（_on_event / _handle_message）
+  → whale/bot.py 的 web handler（_on_event / _handle_message）
       ├─ 解析 cid：私聊 "u<QQ>"，群聊 "g<群号>"
       ├─ 白名单判定 is_owner / is_friend：都不是 → 静默 return
       ├─ 斜杠指令？ → handle_command()（/指令、/记忆、/好感度、/事件、/设关系…）
@@ -91,57 +91,57 @@ QQ 用户发消息
 
 | 文件 | 职责 | 备注 |
 | --- | --- | --- |
-| `bot.py` | 一切主干：HTTP 收事件、指令分发、`reply()`、`build_messages()`、主动消息、定时循环、隐私过滤 | **约 6200 行，改动前先读 §4 的不变量** |
-| `config.py` | 所有配置与阈值，全部从 `.env` 读，带回退默认值 | 新参数加在这里，不要在业务代码里写魔法数 |
-| `llm.py` | DeepSeek 调用封装（重试、超时、消息裁剪） | 单价敏感：这里控制了 max_tokens |
-| `onebot.py` | OneBot v11 客户端：发私聊/群聊、CQ 码拼装、媒体消息构造 | 只做协议，不含业务 |
-| `persona.md` / `persona_friend.md` | 人设（主人口吻 / 朋友口吻） | 改完**重启即生效**，不需要改代码 |
-| `action_protocol.py` | 文本动作标记的纯解析与清理 | 无副作用，不依赖 bot |
-| `action_runtime.py` | 三工具策略、执行状态和脱敏 trace | 默认关闭，逐步 canary |
+| `whale/bot.py` | 一切主干：HTTP 收事件、指令分发、`reply()`、`build_messages()`、主动消息、定时循环、隐私过滤 | **约 6200 行，改动前先读 §4 的不变量** |
+| `whale/config.py` | 所有配置与阈值，全部从 `.env` 读，带回退默认值 | 新参数加在这里，不要在业务代码里写魔法数 |
+| `whale/agent/llm.py` | DeepSeek 调用封装（重试、超时、消息裁剪） | 单价敏感：这里控制了 max_tokens |
+| `whale/integrations/onebot.py` | OneBot v11 客户端：发私聊/群聊、CQ 码拼装、媒体消息构造 | 只做协议，不含业务 |
+| `assets/personas/persona.md` / `assets/personas/persona_friend.md` | 人设（主人口吻 / 朋友口吻） | 改完**重启即生效**，不需要改代码 |
+| `whale/agent/action_protocol.py` | 文本动作标记的纯解析与清理 | 无副作用，不依赖 bot |
+| `whale/agent/action_runtime.py` | 三工具策略、执行状态和脱敏 trace | 默认关闭，逐步 canary |
 
 ### 3.2 记忆系统（最复杂，见 `docs/DATA-MODEL.md`）
 
 | 文件 | 职责 |
 | --- | --- |
-| `neuron.py` | 神经元记忆：节点 + 突触、扩散激活检索、FSRS 遗忘曲线、巩固、复习调度、embedding |
-| `memory.py` | 短期窗口 + 摘要压缩 + 归档（老机制，仍在使用，与 neuron 并存） |
-| `neuron_import.py` | 从 `memory.json` 批量抽取原子事实导入神经元（一次性迁移工具） |
-| `neuron_shadow.py` | 影子评测：用真实对话比对「神经元召回」vs「随机抽样」的相关度 |
-| `neuron_view.py` / `neuron_edit.py` | 3D 记忆云可视化 / 可编辑版（浏览器打开） |
-| `neuron_apply_patch.py` | 在服务器端应用编辑补丁（只传增量，不覆盖整库） |
+| `whale/memory/neuron.py` | 神经元记忆：节点 + 突触、扩散激活检索、FSRS 遗忘曲线、巩固、复习调度、embedding |
+| `whale/memory/memory.py` | 短期窗口 + 摘要压缩 + 归档（老机制，仍在使用，与 neuron 并存） |
+| `scripts/neuron_import.py` | 从 `memory.json` 批量抽取原子事实导入神经元（一次性迁移工具） |
+| `scripts/neuron_shadow.py` | 影子评测：用真实对话比对「神经元召回」vs「随机抽样」的相关度 |
+| `scripts/neuron_view.py` / `scripts/neuron_edit.py` | 3D 记忆云可视化 / 可编辑版（浏览器打开） |
+| `scripts/neuron_apply_patch.py` | 在服务器端应用编辑补丁（只传增量，不覆盖整库） |
 
 ### 3.3 关系与情绪
 
 | 文件 | 职责 |
 | --- | --- |
-| `affection.py` | 好感度 0–100、5 档、每日上限 6 分、衰减、门禁（唱歌 40 / 画画 60）、行为分层与后处理、吃醋 |
-| `mood.py` | 瞬时情绪 −3…+3：被凶/被哄/被夸/陪唱；生闷气（条件：情绪低且关系近） |
-| `rules.py` | 自然语言 → 结构化规则：安静时段、话题黑名单（含 45 分钟开放窗口）、一次性/每天/工作日定时、`no_sticker`、歧义反问 |
-| `remind.py` | 定时队列：`nearest_at`（取最近未来时刻）、`repeat`、`due(grace=600)`、续排 |
+| `whale/relationship/affection.py` | 好感度 0–100、5 档、每日上限 6 分、衰减、门禁（唱歌 40 / 画画 60）、行为分层与后处理、吃醋 |
+| `whale/relationship/mood.py` | 瞬时情绪 −3…+3：被凶/被哄/被夸/陪唱；生闷气（条件：情绪低且关系近） |
+| `whale/behavior/rules.py` | 自然语言 → 结构化规则：安静时段、话题黑名单（含 45 分钟开放窗口）、一次性/每天/工作日定时、`no_sticker`、歧义反问 |
+| `whale/behavior/remind.py` | 定时队列：`nearest_at`（取最近未来时刻）、`repeat`、`due(grace=600)`、续排 |
 
 ### 3.4 多模态
 
 | 文件 | 职责 |
 | --- | --- |
-| `sing.py` | 唱歌流水线（**在家里电脑执行**）：B 站搜索 → 打分选歌 → 下载 → demucs 分离 → 音高判定 → RVC 换声 → 切片 |
-| `songlib.py` | 曲库：按歌名存已做好的切片，点歌先查曲库（家里电脑关着也能放） |
-| `voice.py` | TTS 与音频处理（WSOLA 变速不变调等） |
-| `media.py` | 视频/图片理解：抽帧、字幕、URL 识别 |
-| `imagegen.py` | 画图 |
-| `stickers.py` | 表情包库（按情绪标签选图） |
-| `home_agent.py` | **家里电脑侧的 worker**：轮询领活、执行、交活；`CODE_VERSION` 版本握手 |
+| `whale/media/sing.py` | 唱歌流水线（**在家里电脑执行**）：B 站搜索 → 打分选歌 → 下载 → demucs 分离 → 音高判定 → RVC 换声 → 切片 |
+| `whale/media/songlib.py` | 曲库：按歌名存已做好的切片，点歌先查曲库（家里电脑关着也能放） |
+| `whale/media/voice.py` | TTS 与音频处理（WSOLA 变速不变调等） |
+| `whale/media/media.py` | 视频/图片理解：抽帧、字幕、URL 识别 |
+| `whale/media/imagegen.py` | 画图 |
+| `whale/media/stickers.py` | 表情包库（按情绪标签选图） |
+| `whale/integrations/home_agent.py` | **家里电脑侧的 worker**：轮询领活、执行、交活；`CODE_VERSION` 版本握手 |
 | `whale-relay.py` | 家里电脑入口（在 `tools/` 里）：维持隧道 + 循环领活 + 交活重试 + 结果落盘补交 |
 
 ### 3.5 运维与自检
 
 | 文件 | 职责 |
 | --- | --- |
-| `selfcheck.py` | 离线自测 **159 项**，不连 QQ、不花 token；改完必须先跑 |
-| `sysinfo.py` | 服务器自身状态（内存/磁盘/容器/中继在线） |
-| `notify.py` | 邮件通知（掉线时发二维码等） |
-| `evolve.py` | 性格快照（只对主人；朋友不参与“她的成长”） |
-| `build_library.py` | 批量预热曲库 |
-| `build_docs.py` | 把 md 转成自带样式的 HTML（客户端 markdown 预览有 bug，用这个绕开） |
+| `scripts/selfcheck.py` | 离线自测 **159 项**，不连 QQ、不花 token；改完必须先跑 |
+| `whale/integrations/sysinfo.py` | 服务器自身状态（内存/磁盘/容器/中继在线） |
+| `whale/integrations/notify.py` | 邮件通知（掉线时发二维码等） |
+| `whale/relationship/evolve.py` | 性格快照（只对主人；朋友不参与“她的成长”） |
+| `scripts/build_library.py` | 批量预热曲库 |
+| `scripts/build_docs.py` | 把 md 转成自带样式的 HTML（客户端 markdown 预览有 bug，用这个绕开） |
 
 ---
 
@@ -211,20 +211,20 @@ QQ 用户发消息
 
 | 文件 | 内容 | 谁写 |
 | --- | --- | --- |
-| `memory.json` | 对话窗口 + 摘要 + 归档（按 cid 隔离） | `memory.py` |
-| `neuron.db` | sqlite：`neuron` 节点表 + `synapse` 突触表 | `neuron.py` |
-| `emb_cache.json` | embedding 磁盘缓存（文本 → 1024 维向量） | `neuron.py` |
-| `affection.json` | 好感度、事件、衰减、门禁冷却 | `affection.py` |
-| `mood.json` | 瞬时情绪、忽略计数 | `mood.py` |
-| `rules.json` | 规则：安静时段/话题/定时/no_sticker | `rules.py` |
-| `reminders.json` | 定时队列 | `remind.py` |
-| `contacts.json` | 称呼、关系（lover/family/…）、性别、勿扰、`last_incoming` | `bot.py` |
-| `state.json` | 跨重启状态：看视频记录、行动台账、最后发的歌 | `bot.py` |
-| `runtime.db` | 动作生命周期、交付状态、失败和未知状态 | `action_store.py` |
-| `jobs.db` | 家庭任务、租约、结果和消费状态 | `job_store.py` |
-| `songs/index.json` + `songs/*.mp3` | 曲库索引 + 切片音频 | `songlib.py` |
-| `announcements.jsonl` | 公告历史 | `bot.py` |
-| `shadow_daily.jsonl` | 每日记忆评测 | `neuron_shadow.py` |
+| `memory.json` | 对话窗口 + 摘要 + 归档（按 cid 隔离） | `whale/memory/memory.py` |
+| `neuron.db` | sqlite：`neuron` 节点表 + `synapse` 突触表 | `whale/memory/neuron.py` |
+| `emb_cache.json` | embedding 磁盘缓存（文本 → 1024 维向量） | `whale/memory/neuron.py` |
+| `affection.json` | 好感度、事件、衰减、门禁冷却 | `whale/relationship/affection.py` |
+| `mood.json` | 瞬时情绪、忽略计数 | `whale/relationship/mood.py` |
+| `rules.json` | 规则：安静时段/话题/定时/no_sticker | `whale/behavior/rules.py` |
+| `reminders.json` | 定时队列 | `whale/behavior/remind.py` |
+| `contacts.json` | 称呼、关系（lover/family/…）、性别、勿扰、`last_incoming` | `whale/bot.py` |
+| `state.json` | 跨重启状态：看视频记录、行动台账、最后发的歌 | `whale/bot.py` |
+| `runtime.db` | 动作生命周期、交付状态、失败和未知状态 | `whale/agent/action_store.py` |
+| `jobs.db` | 家庭任务、租约、结果和消费状态 | `whale/agent/job_store.py` |
+| `songs/index.json` + `songs/*.mp3` | 曲库索引 + 切片音频 | `whale/media/songlib.py` |
+| `announcements.jsonl` | 公告历史 | `whale/bot.py` |
+| `shadow_daily.jsonl` | 每日记忆评测 | `scripts/neuron_shadow.py` |
 
 **字段与算法细节见 `docs/DATA-MODEL.md`。**
 
@@ -246,10 +246,10 @@ docker run -d --name snowluma -p 127.0.0.1:3001:3001 \
 #    首次需要扫码登录 QQ（详见 deploy/snowluma.md）
 
 # 4) 自测（不连 QQ、不花钱）
-python selfcheck.py           # 期望：共 159 项，通过 159 项
+python scripts/selfcheck.py           # 期望：共 159 项，通过 159 项
 
 # 5) 启动
-python bot.py                 # 或 systemctl --user start whale-bot（详见 docs/OPERATIONS.md）
+python whale/bot.py                 # 或 systemctl --user start whale-bot（详见 docs/OPERATIONS.md）
 ```
 
 **没有家里中继也能跑**：唱歌会提示“家里那台电脑没连着”，其余功能（聊天/记忆/好感/规则/看图）全正常。
@@ -258,14 +258,14 @@ python bot.py                 # 或 systemctl --user start whale-bot（详见 do
 
 ## 9. 测试与验收标准
 
-- `python selfcheck.py` —— **唯一硬门槛**，159 项全过才算改完。
+- `python scripts/selfcheck.py` —— **唯一硬门槛**，159 项全过才算改完。
   它覆盖：纯函数、指令解析、隐私隔离（朋友看不到“爸爸”）、贴图逻辑、自检模块 import、
   规则隔离（改一条不冲掉另一条）等。
 - 手动冒烟：
   - 主人：`/指令` `/记忆` `/好感度` `/事件` `/设关系` 各发一次
   - 朋友（白名单内）：确认回的是“朋友口吻”，且**看不到**“爸爸”两个字
   - 三人以外：发消息应**完全无回应**
-- 记忆系统改动额外跑：`python neuron_shadow.py`，看提升是否仍 > 15%
+- 记忆系统改动额外跑：`python scripts/neuron_shadow.py`，看提升是否仍 > 15%
 
 ---
 
@@ -286,7 +286,7 @@ python bot.py                 # 或 systemctl --user start whale-bot（详见 do
 5. **单进程无守护**：`systemd` 会拉起，但进程内异常只记日志。
    → 加健康检查端点 + 看门狗。
 6. **预加载缓冲在内存里**：重启即丢（已有“丢了就重做”的兜底，但会慢一次）。
-7. **`bot.py` 6200 行**：`reply()` 是巨型函数。→ 建议逐步拆成 `handlers/`、`pipeline/`。
+7. **`whale/bot.py` 6200 行**：`reply()` 是巨型函数。→ 建议逐步拆成 `handlers/`、`pipeline/`。
 8. **日志是纯文本**：查问题时靠 grep。→ 结构化字段（cid/kind/耗时）。
 
 ### P2 · 体验
@@ -305,11 +305,11 @@ python bot.py                 # 或 systemctl --user start whale-bot（详见 do
 
 ## 11. 你可以改什么、不能改什么
 
-**可以**：任何代码、提示词、阈值、文档。改完跑 `selfcheck.py`。
+**可以**：任何代码、提示词、阈值、文档。改完跑 `scripts/selfcheck.py`。
 
 **不要**：
 
-- 不要把 `.env`、`data/`、任何真实 QQ 号/密钥提交到仓库（见 `SECURITY.md`）
+- 不要把 `.env`、`data/`、任何真实 QQ 号/密钥提交到仓库（见 `docs/SECURITY-MODEL.md`）
 - 不要绕过 `sanitize_for_friend()`
 - 不要用“提示词里加一句”代替代码闸门（见 §4 第 1 条）
 - 不要在 `reply()` 里插代码而不管后处理顺序（见 §5）
@@ -324,5 +324,5 @@ python bot.py                 # 或 systemctl --user start whale-bot（详见 do
 | `docs/DATA-MODEL.md` | 所有数据结构的字段、算法公式、阈值 |
 | `docs/OPERATIONS.md` | 部署、systemd、docker、家里中继、排障手册 |
 | `docs/LESSONS.md` | 踩坑记录（脱敏精选，最实用的部分） |
-| `CONTRIBUTING.md` | 改代码的流程与提交规范 |
-| `SECURITY.md` | 密钥、隐私边界、绝不能提交的东西 |
+| `docs/DEVELOPMENT.md` | 改代码的流程与提交规范 |
+| `docs/SECURITY-MODEL.md` | 密钥、隐私边界、绝不能提交的东西 |
