@@ -1074,7 +1074,8 @@ def _check_action_runtime() -> None:
         check("运行时执行已注册动作", first.get("status") == "success")
         check(
             "运行时跳过重复动作 ID",
-            duplicate.get("error_code") == "duplicate_action_id",
+            duplicate.get("error_code") == "duplicate_delivered"
+            and duplicate.get("delivered") is True,
         )
         check("运行时拒绝越权动作", denied.get("status") == "denied")
         check(

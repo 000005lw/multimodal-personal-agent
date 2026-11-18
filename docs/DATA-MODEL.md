@@ -26,6 +26,9 @@ CREATE TABLE neuron (
   lapses     INTEGER    -- 想不起来次数
 );
 
+-- 唯一性作用域是 (cid, text)，不是全库 text
+CREATE UNIQUE INDEX ... ON neuron(cid, text);
+
 CREATE TABLE synapse (
   a    INTEGER,   -- 节点 id
   b    INTEGER,
@@ -33,6 +36,12 @@ CREATE TABLE synapse (
   kind TEXT       -- cooc（共现）等
 );
 ```
+
+### 1.0 跨用户唯一性
+
+早期版本使用 `text UNIQUE`，不同会话写入同一句话时会错误复用同一节点。
+当前版本使用 `UNIQUE(cid, text)`。旧库会在 `neuron.connect()` 中通过事务式
+表重建迁移，保留节点 ID 和 synapse 引用。
 
 ### 1.1 遗忘曲线（FSRS）
 
@@ -276,7 +285,46 @@ replay()       挑 0.15 ≤ R ≤ 0.80（快忘但还有救）复习 8 条，复
 
 ---
 
-## 10. 阈值速查
+## 10. 动作台账：`runtime.db`
+
+```sql
+action_runtime (
+  action_id, cid, kind, arg_hash, arg_length, source,
+  status, delivered, retryable, attempts,
+  created_at, updated_at, started_at, finished_at, error_code
+)
+```
+
+- `arg_hash` 和 `arg_length` 替代自由文本参数，减少 Trace/台账隐私泄漏。
+- `in_flight` 在进程重启后迁移为 `unknown`。
+- `delivered` 终止态不会再次执行副作用。
+- `failed_retryable` 只能通过显式重试进入执行。
+
+## 11. 家庭任务：`jobs.db`
+
+```sql
+jobs (
+  id, kind, conversation_id, payload_json, payload_hash,
+  status, attempts, max_attempts, created_at, updated_at,
+  claimed_at, lease_until, finished_at,
+  result_json, result_hash, delivered_at, error_code
+)
+```
+
+状态：
+
+```text
+pending -> claimed -> result_ready -> delivering -> consumed
+                    \-> failed / unknown
+```
+
+- Worker 领取任务时更新 `claimed_at` 和 `lease_until`。
+- 过期租约在启动或下一次领取时恢复。
+- 结果先持久化，再交给原 Future 或补发流程。
+- 已消费结果不会被重复结果覆盖。
+- 默认单结果上限 16MB，避免 SQLite 无限膨胀。
+
+## 12. 阈值速查
 
 | 参数 | 值 | 位置 |
 | --- | --- | --- |

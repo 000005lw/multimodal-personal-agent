@@ -12,6 +12,8 @@
 git checkout -b feat/your-thing
 # 改代码
 python selfcheck.py            # 必须 159/159，这是唯一硬门槛
+python tools/action_replay.py  # 动作选择、权限和执行回放
+python tools/reliability_check.py  # 迁移、重试、任务恢复和异步 I/O
 git commit -m "feat: 一句话说清改了什么"
 ```
 

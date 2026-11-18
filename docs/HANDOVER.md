@@ -6,6 +6,11 @@
 > 跑在一台 2G 的云服务器上；重活（唱歌换声、抓 B 站视频）由一台家用电脑通过 SSH 隧道代跑。
 > 代码 6200 行的 `bot.py` 是主干，其余 30 多个模块是它的器官。
 
+> 2026-11-18 补充：当前分支新增了 SQLite 动作台账
+> `data/runtime.db`、家庭任务台账 `data/jobs.db`、异步 Embedding 热路径，
+> 以及 `tools/reliability_check.py`。详细交接见
+> `docs/RELIABILITY-HANDOVER.md`。
+
 ---
 
 ## 0. 三分钟速览
@@ -215,6 +220,8 @@ QQ 用户发消息
 | `reminders.json` | 定时队列 | `remind.py` |
 | `contacts.json` | 称呼、关系（lover/family/…）、性别、勿扰、`last_incoming` | `bot.py` |
 | `state.json` | 跨重启状态：看视频记录、行动台账、最后发的歌 | `bot.py` |
+| `runtime.db` | 动作生命周期、交付状态、失败和未知状态 | `action_store.py` |
+| `jobs.db` | 家庭任务、租约、结果和消费状态 | `job_store.py` |
 | `songs/index.json` + `songs/*.mp3` | 曲库索引 + 切片音频 | `songlib.py` |
 | `announcements.jsonl` | 公告历史 | `bot.py` |
 | `shadow_daily.jsonl` | 每日记忆评测 | `neuron_shadow.py` |

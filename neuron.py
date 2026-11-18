@@ -17,7 +17,7 @@
 
 from __future__ import annotations
 
-import math
+import json
 import re
 import sqlite3
 import time
@@ -55,7 +55,7 @@ CREATE TABLE IF NOT EXISTS neuron (
   id        INTEGER PRIMARY KEY AUTOINCREMENT,
   cid       TEXT    NOT NULL DEFAULT 'u0',
   kind      TEXT    NOT NULL DEFAULT 'fact',
-  text      TEXT    NOT NULL UNIQUE,
+  text      TEXT    NOT NULL,
   vec       BLOB,
   strength  REAL    NOT NULL DEFAULT 1.0,   -- 缓存的可提取性 R（0~1）
   stability REAL    NOT NULL DEFAULT 3.0,   -- 稳定性 S（天）
@@ -64,7 +64,8 @@ CREATE TABLE IF NOT EXISTS neuron (
   valence   REAL    NOT NULL DEFAULT 0.0,
   created   REAL    NOT NULL,
   last_hit  REAL    NOT NULL,               -- 上次"被想起"的时间
-  hits      INTEGER NOT NULL DEFAULT 0
+  hits      INTEGER NOT NULL DEFAULT 0,
+  UNIQUE(cid, text)
 );
 CREATE TABLE IF NOT EXISTS synapse (
   a    INTEGER NOT NULL,
@@ -78,6 +79,101 @@ CREATE INDEX IF NOT EXISTS idx_neuron_cid ON neuron(cid);
 CREATE INDEX IF NOT EXISTS idx_syn_a ON synapse(a);
 CREATE INDEX IF NOT EXISTS idx_syn_b ON synapse(b);
 """
+
+
+def _unique_columns(conn: sqlite3.Connection) -> list[tuple[str, ...]]:
+    """Return the column sets protected by UNIQUE indexes."""
+    result: list[tuple[str, ...]] = []
+    for row in conn.execute("PRAGMA index_list(neuron)").fetchall():
+        if not row["unique"]:
+            continue
+        cols = tuple(
+            item["name"]
+            for item in conn.execute(
+                f"PRAGMA index_info({row['name']!r})"
+            ).fetchall()
+            if item["name"]
+        )
+        if cols:
+            result.append(cols)
+    return result
+
+
+def _migrate_neuron_unique_scope(conn: sqlite3.Connection) -> bool:
+    """Migrate the old global `text UNIQUE` constraint to `UNIQUE(cid, text)`.
+
+    SQLite cannot alter a table-level UNIQUE constraint in place. The table is
+    rebuilt transactionally while preserving ids, because synapse.a/b refer to
+    neuron.id. A failure rolls the transaction back and leaves the old table
+    usable.
+    """
+    constraints = _unique_columns(conn)
+    if ("cid", "text") in constraints or ("text",) not in constraints:
+        return False
+
+    columns = [
+        row["name"]
+        for row in conn.execute("PRAGMA table_info(neuron)").fetchall()
+    ]
+    if not columns:
+        return False
+
+    conn.execute("PRAGMA foreign_keys=OFF")
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        old_count = int(
+            conn.execute("SELECT COUNT(*) AS c FROM neuron").fetchone()["c"]
+        )
+        conn.execute("DROP TABLE IF EXISTS neuron_migrated")
+        conn.execute(
+            """
+            CREATE TABLE neuron_migrated (
+              id        INTEGER PRIMARY KEY AUTOINCREMENT,
+              cid       TEXT    NOT NULL DEFAULT 'u0',
+              kind      TEXT    NOT NULL DEFAULT 'fact',
+              text      TEXT    NOT NULL,
+              vec       BLOB,
+              strength  REAL    NOT NULL DEFAULT 1.0,
+              stability REAL    NOT NULL DEFAULT 3.0,
+              reps      INTEGER NOT NULL DEFAULT 0,
+              lapses    INTEGER NOT NULL DEFAULT 0,
+              valence   REAL    NOT NULL DEFAULT 0.0,
+              created   REAL    NOT NULL,
+              last_hit  REAL    NOT NULL,
+              hits      INTEGER NOT NULL DEFAULT 0,
+              UNIQUE(cid, text)
+            )
+            """
+        )
+        quoted = ", ".join(f'"{name}"' for name in columns)
+        conn.execute(
+            f"INSERT INTO neuron_migrated ({quoted}) "
+            f"SELECT {quoted} FROM neuron"
+        )
+        new_count = int(
+            conn.execute("SELECT COUNT(*) AS c FROM neuron_migrated").fetchone()["c"]
+        )
+        if new_count != old_count:
+            raise RuntimeError(
+                f"neuron 迁移节点数不一致：旧={old_count}，新={new_count}"
+            )
+        conn.execute("DROP TABLE neuron")
+        conn.execute("ALTER TABLE neuron_migrated RENAME TO neuron")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_neuron_cid ON neuron(cid)")
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_syn_a ON synapse(a)"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_syn_b ON synapse(b)"
+        )
+        conn.execute("COMMIT")
+    except Exception:
+        if conn.in_transaction:
+            conn.execute("ROLLBACK")
+        conn.execute("PRAGMA foreign_keys=ON")
+        raise
+    conn.execute("PRAGMA foreign_keys=ON")
+    return True
 
 
 # ---------- 基础 ----------
@@ -102,6 +198,7 @@ def connect(path: Path | str | None = None) -> sqlite3.Connection:
     if "lapses" not in cols:
         conn.execute("ALTER TABLE neuron ADD COLUMN lapses INTEGER NOT NULL DEFAULT 0")
     conn.commit()
+    _migrate_neuron_unique_scope(conn)
     return conn
 
 
@@ -209,6 +306,58 @@ def embed(text: str) -> np.ndarray:
     return embed_many([text])[0]
 
 
+async def _request_embeddings_async(
+    batch: list[str], key: str, dim: int
+) -> list[list[float]]:
+    """Request one embedding batch without blocking the aiohttp event loop."""
+    import aiohttp
+
+    timeout = aiohttp.ClientTimeout(total=40)
+    async with aiohttp.ClientSession(timeout=timeout) as session:
+        async with session.post(
+            "https://dashscope.aliyuncs.com/compatible-mode/v1/embeddings",
+            headers={"Authorization": f"Bearer {key}"},
+            json={
+                "model": "text-embedding-v3",
+                "input": batch,
+                "dimensions": dim,
+                "encoding_format": "float",
+            },
+        ) as resp:
+            resp.raise_for_status()
+            data = await resp.json(content_type=None)
+    return [item["embedding"] for item in data["data"]]
+
+
+async def embed_many_async(texts: list[str]) -> list[np.ndarray]:
+    """Async version used by the bot hot path; hash fallback is unchanged."""
+    cache = _load_cache()
+    need = [t for t in dict.fromkeys(texts) if t not in cache]
+    key = _api_key()
+    if need and key:
+        try:
+            for i in range(0, len(need), 10):
+                batch = need[i:i + 10]
+                vectors = await _request_embeddings_async(batch, key, DIM)
+                for text, vector in zip(batch, vectors):
+                    cache[text] = vector
+            _save_cache()
+        except Exception:
+            pass
+
+    out = []
+    for text in texts:
+        if text in cache:
+            out.append(np.asarray(cache[text], dtype=np.float32))
+        else:
+            out.append(hash_embed(text))
+    return out
+
+
+async def embed_async(text: str) -> np.ndarray:
+    return (await embed_many_async([text]))[0]
+
+
 def _unit(v: np.ndarray) -> np.ndarray:
     n = float(np.linalg.norm(v))
     return v / n if n else v
@@ -238,18 +387,21 @@ def add_node(
     kind: str = DEFAULT_KIND,
     valence: float = 0.0,
     cid: str = "u0",
+    vec: np.ndarray | None = None,
 ) -> int:
     """加一件事。同样的话只存一条，但会刷新强度（等于又想起一次）。"""
     text = (text or "").strip()
     if not text:
         raise ValueError("空记忆")
     now = time.time()
-    row = conn.execute("SELECT id FROM neuron WHERE text = ?", (text,)).fetchone()
+    row = conn.execute(
+        "SELECT id FROM neuron WHERE cid = ? AND text = ?", (cid, text)
+    ).fetchone()
     if row:
         conn.execute(
             "UPDATE neuron SET strength = MIN(1.0, strength + 0.15), last_hit = ?, "
-            "hits = hits + 1 WHERE id = ?",
-            (now, row["id"]),
+            "hits = hits + 1 WHERE id = ? AND cid = ?",
+            (now, row["id"], cid),
         )
         conn.commit()
         return int(row["id"])
@@ -261,7 +413,7 @@ def add_node(
             cid,
             kind,
             text,
-            _vec_to_blob(embed(text)),
+            _vec_to_blob(vec if vec is not None else embed(text)),
             STABILITY.get(kind, STABILITY[DEFAULT_KIND]),
             valence,
             now,
@@ -412,7 +564,7 @@ def due_reviews(conn: sqlite3.Connection, cid: str = "", limit: int = 8) -> list
 # ---------- 检索：扩散激活 ----------
 
 def _cosine(a: np.ndarray, b: np.ndarray) -> float:
-    if not a.any() or not b.any():
+    if not a.any() or not b.any() or a.shape != b.shape:
         return 0.0
     return float(np.dot(_unit(a), _unit(b)))
 
@@ -425,6 +577,9 @@ def activate(
     hops: int = 2,
     spread: float = 0.5,
     min_strength: float = 0.15,
+    *,
+    query_vec: np.ndarray | None = None,
+    replacement_vectors: dict[int, np.ndarray] | None = None,
 ) -> list[dict]:
     """从这句话出发，顺着突触想起一堆相关的事。
 
@@ -442,14 +597,16 @@ def activate(
     if not rows:
         return []
 
-    query = embed(text)
+    query = query_vec if query_vec is not None else embed(text)
+    target_dim = int(query.size)
 
     act: dict[int, float] = {}
     for r in rows:
         vec = _blob_to_vec(r["vec"])
         # 维度不一致 = 当初是哈希兜底存的，重新算一次（换模型后自动修复）
-        if vec.size != DIM:
-            vec = embed(r["text"])
+        if vec.size != target_dim:
+            replacement = (replacement_vectors or {}).get(int(r["id"]))
+            vec = replacement if replacement is not None else embed(r["text"])
             conn.execute("UPDATE neuron SET vec = ? WHERE id = ?",
                          (_vec_to_blob(vec), r["id"]))
         score = _cosine(query, vec)
@@ -501,6 +658,50 @@ def activate(
         if len(out) >= k:
             break
     return out
+
+
+async def activate_async(
+    conn: sqlite3.Connection,
+    text: str,
+    cid: str = "",
+    k: int = 6,
+    hops: int = 2,
+    spread: float = 0.5,
+    min_strength: float = 0.15,
+) -> list[dict]:
+    """Async activation that requests all missing embeddings off-loop."""
+    if cid:
+        rows = conn.execute(
+            "SELECT id, text, vec FROM neuron WHERE cid = ?", (cid,)
+        ).fetchall()
+    else:
+        rows = conn.execute("SELECT id, text, vec FROM neuron").fetchall()
+    if not rows:
+        return []
+
+    stale = [
+        (int(row["id"]), str(row["text"]))
+        for row in rows
+        if _blob_to_vec(row["vec"]).size != DIM
+    ]
+    vectors = await embed_many_async(
+        [text] + [item[1] for item in stale]
+    )
+    replacements = {
+        node_id: vector
+        for (node_id, _text), vector in zip(stale, vectors[1:])
+    }
+    return activate(
+        conn,
+        text,
+        cid=cid,
+        k=k,
+        hops=hops,
+        spread=spread,
+        min_strength=min_strength,
+        query_vec=vectors[0],
+        replacement_vectors=replacements,
+    )
 
 
 def remember_episode(
@@ -646,8 +847,12 @@ def update_node(
     if not sets:
         return False
     args.append(node_id)
-    conn.execute(f"UPDATE neuron SET {', '.join(sets)} WHERE id = ?", args)
-    conn.commit()
+    try:
+        conn.execute(f"UPDATE neuron SET {', '.join(sets)} WHERE id = ?", args)
+        conn.commit()
+    except sqlite3.IntegrityError:
+        conn.rollback()
+        return False
     return True
 
 

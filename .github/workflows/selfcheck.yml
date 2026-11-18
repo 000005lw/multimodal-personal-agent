@@ -19,9 +19,13 @@ jobs:
       - name: Compile
         run: |
           python -W error::SyntaxWarning -m py_compile \
-            action_protocol.py action_runtime.py bot.py home_agent.py memory.py \
-            selfcheck.py tools/action_replay.py tools/whale-relay.py voice.py
+            action_protocol.py action_runtime.py action_store.py job_store.py \
+            bot.py home_agent.py memory.py neuron.py selfcheck.py \
+            tools/action_replay.py tools/reliability_check.py \
+            tools/whale-relay.py voice.py
       - name: Offline selfcheck
         run: python selfcheck.py
       - name: Agent action replay
         run: python tools/action_replay.py
+      - name: Reliability checks
+        run: python tools/reliability_check.py --json

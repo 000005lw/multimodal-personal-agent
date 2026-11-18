@@ -24,7 +24,7 @@ WhaleBot
 ├── HTTP 层（aiohttp）
 │   ├── POST /            OneBot 事件上报（唯一入口）
 │   ├── POST /jobs/*      家里电脑领活 / 交活（带 token 与版本握手）
-│   └── GET  /health      健康检查
+│   └── GET  /health      健康检查、动作与任务状态统计
 ├── 分发层
 │   ├── _handle_message() 白名单判定 → 指令分流 → reply()
 │   └── handle_command()  斜杠指令（表驱动：COMMANDS）
@@ -32,7 +32,9 @@ WhaleBot
 │   ├── build_messages()  拼 system 提示词（人设/关系/记忆/事实/历史）
 │   ├── llm.chat()        DeepSeek
 │   ├── action_protocol   纯解析动作并清理正文
-│   ├── action_runtime    歌单/贴图/自查权限与 trace
+│   ├── action_runtime    权限、动作生命周期与 trace
+│   ├── action_store      SQLite 动作台账
+│   ├── job_store         SQLite 家庭任务台账
 │   └── 后处理流水线       见 HANDOVER §5
 ├── 子系统（每个一个模块）
 │   ├── memory + neuron   记忆
@@ -102,8 +104,20 @@ WhaleBot
 1. **隧道由家里发起**（`ssh -N -L 8091:127.0.0.1:8090`），服务器不需要内网穿透。
 2. **结果落盘 + 启动补交**：`%TEMP%\whale_pending_report\<job_id>.json`，
    交成功才删；程序崩了下次启动自动补交。
-3. **交作业幂等**：服务器用 `delivered` 集合去重，重试不会把同一首歌发两遍。
+3. **交作业幂等**：服务器用 `data/jobs.db` 的结果状态去重，重试不会把同一首歌发两遍。
 4. **断线重做**：处理中抛连接类异常 → 等隧道恢复 → 重做这一段（最多 3 次）。
+
+持久化状态：
+
+```text
+pending -> claimed -> result_ready -> delivering -> consumed
+                    \-> failed / unknown
+```
+
+- `/jobs/poll` 原子领取任务并写入租约，不再只依赖内存 `asyncio.Queue`。
+- 过期租约在启动或下一次领取时恢复；超过最大领取次数进入 `unknown`。
+- 已完成结果保留在 SQLite，原 Future 不存在时音频结果可以补发。
+- 已消费结果不会被重复提交覆盖。
 
 ---
 

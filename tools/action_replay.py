@@ -159,7 +159,8 @@ def replay(path: Path) -> dict:
                     if result.get("error_code") == "unregistered_tool"
                 ]
                 duplicate_skips = sum(
-                    result.get("error_code") == "duplicate_action_id"
+                    str(result.get("error_code") or "").startswith("duplicate_")
+                    or result.get("error_code") == "retry_not_requested"
                     for result in results
                 )
                 for count in calls.values():

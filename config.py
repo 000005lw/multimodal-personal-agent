@@ -206,6 +206,12 @@ ALIYUN_TTS_PITCH_RATE = _int("ALIYUN_TTS_PITCH_RATE", 0)
 
 PERSONA_FILE = (BASE_DIR / _get("PERSONA_FILE", "persona.md")).resolve()
 MEMORY_FILE = DATA_DIR / "memory.json"
+RUNTIME_DB_FILE = DATA_DIR / _get("RUNTIME_DB_FILE", "runtime.db")
+JOB_DB_FILE = DATA_DIR / _get("JOB_DB_FILE", "jobs.db")
+JOB_LEASE_SECONDS = _int("JOB_LEASE_SECONDS", 1800)
+JOB_MAX_ATTEMPTS = _int("JOB_MAX_ATTEMPTS", 3)
+JOB_RETENTION_DAYS = _int("JOB_RETENTION_DAYS", 7)
+JOB_RESULT_MAX_BYTES = _int("JOB_RESULT_MAX_BYTES", 16 * 1024 * 1024)
 LOG_LEVEL = _get("LOG_LEVEL", "INFO").upper()
 
 # ---------- 图片理解 ----------

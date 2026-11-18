@@ -25,6 +25,8 @@ from aiohttp import web
 import config
 import action_protocol
 import action_runtime
+import action_store
+import job_store
 import llm
 import evolve
 import emotion
@@ -43,13 +45,9 @@ import affection
 import mood
 import rules
 import remind
-import voice
 
 log = logging.getLogger("whale")
 
-# 家里电脑中转：任务队列 + 等着收结果的 future
-JOBS: asyncio.Queue | None = None
-PENDING: dict = {}
 # 家里人那台中继上次报上来的代码版本：{"value": 4, "ts": ...}
 HOME_VERSION: dict = {"value": 0, "ts": 0.0}
 
@@ -681,7 +679,22 @@ class WhaleBot:
             if config.ACTION_TRACE_ENABLED
             else None
         )
-        self.action_runtime = action_runtime.ActionRuntime(trace_path)
+        self.action_store = action_store.ActionStore(config.RUNTIME_DB_FILE)
+        recovered_actions = self.action_store.recover_inflight()
+        if recovered_actions:
+            log.warning(
+                "恢复了 %d 个上次中断的动作，状态标为 unknown，未自动重放",
+                recovered_actions,
+            )
+        self.action_runtime = action_runtime.ActionRuntime(
+            trace_path, ledger=self.action_store
+        )
+        self.jobs = job_store.JobStore(
+            config.JOB_DB_FILE,
+            max_attempts=config.JOB_MAX_ATTEMPTS,
+            result_max_bytes=config.JOB_RESULT_MAX_BYTES,
+        )
+        self._job_waiters: dict[str, asyncio.Future] = {}
 
     # ---------- 小工具 ----------
     def _remember_seen(self, key) -> bool:
@@ -1109,6 +1122,36 @@ class WhaleBot:
         log.info("[%s] 想起 %d 件事：%s", cid, len(out), " / ".join(x[2:] for x in out)[:80])
         return out
 
+    async def _neuron_recall_async(self, cid: str, text: str) -> list[str]:
+        """Async recall used by the reply path to avoid blocking on embedding I/O."""
+        if not text or not str(text).strip():
+            return []
+        conn = self._neuron_conn()
+        if not conn:
+            return []
+        try:
+            hits = await neuron.activate_async(
+                conn, str(text)[:200], cid=cid, k=5
+            )
+        except Exception as exc:
+            log.debug("异步记忆检索失败：%s", exc)
+            return []
+        out = []
+        for hit in hits:
+            out.append(f"· {hit['text']}")
+            try:
+                neuron.hit(conn, hit["id"], boost=0.04)
+            except Exception:
+                pass
+        conn.commit()
+        log.info(
+            "[%s] 想起 %d 件事：%s",
+            cid,
+            len(out),
+            " / ".join(item[2:] for item in out)[:80],
+        )
+        return out
+
     async def _neuron_learn(self, cid: str, user_text: str, reply_text: str) -> None:
         """把刚聊的这几句里"值得记住的"抽成记忆节点。
 
@@ -1161,6 +1204,7 @@ class WhaleBot:
 
         added = 0
         ids = []
+        pending_nodes: list[tuple[str, str, float]] = []
         for it in items if isinstance(items, list) else []:
             fact = str(it.get("text", "")).strip()
             kind = str(it.get("kind", "fact")).strip()
@@ -1172,8 +1216,30 @@ class WhaleBot:
                 val = max(-1.0, min(1.0, float(it.get("valence", 0))))
             except Exception:
                 val = 0.0
+            pending_nodes.append((fact, kind, val))
+
+        if pending_nodes:
             try:
-                ids.append(neuron.add_node(conn, fact, kind=kind, valence=val, cid=cid))
+                vectors = await neuron.embed_many_async(
+                    [item[0] for item in pending_nodes]
+                )
+            except Exception:
+                vectors = [None] * len(pending_nodes)
+        else:
+            vectors = []
+
+        for (fact, kind, val), vector in zip(pending_nodes, vectors):
+            try:
+                ids.append(
+                    neuron.add_node(
+                        conn,
+                        fact,
+                        kind=kind,
+                        valence=val,
+                        cid=cid,
+                        vec=vector,
+                    )
+                )
                 added += 1
             except Exception:
                 continue
@@ -1201,8 +1267,16 @@ class WhaleBot:
             "**也不要每次都写「怎么了」——换个说法**，别和上一条重样。"
         )
         try:
+            recalled = await self._neuron_recall_async(
+                cid, "（对方只发来一个表情包，没有文字）"
+            )
             msgs = self.build_messages(
-                cid, "（对方只发来一个表情包，没有文字）", False, [], hint
+                cid,
+                "（对方只发来一个表情包，没有文字）",
+                False,
+                [],
+                hint,
+                recalled=recalled,
             )
             raw = await llm.chat(msgs)
             text = strip_last_period(
@@ -2265,6 +2339,7 @@ class WhaleBot:
         voice_mode: bool = False,
         images: list[dict] | None = None,
         extra_context: str | None = None,
+        recalled: list[str] | None = None,
     ) -> list[dict]:
         # Groups and friends never receive the owner persona. The owner persona
         # contains private relationship language and must stay behind the
@@ -2688,7 +2763,11 @@ class WhaleBot:
                     )
 
         # 神经元记忆：顺着这句话想起相关的事（只读那次过滤过 cid，不会串人）
-        recalled = self._neuron_recall(cid, user_text)
+        recalled = (
+            self._neuron_recall(cid, user_text)
+            if recalled is None
+            else list(recalled)
+        )
         dream = self._fresh_dream() if is_owner(cid) else {}
         if dream:
             recalled = list(recalled) + [
@@ -2975,7 +3054,7 @@ class WhaleBot:
             return
 
         result = await self._ask_home(
-            "sing", query, timeout=config.SING_TIMEOUT, segment=index
+            "sing", query, timeout=config.SING_TIMEOUT, segment=index, cid=cid
         )
 
         session = self._song_session.get(key)
@@ -3715,11 +3794,19 @@ class WhaleBot:
                 ),
             )
 
-    async def _deliver_orphan_song(self, result: dict) -> None:
+    async def _deliver_orphan_song(
+        self, result: dict, job_id: str = ""
+    ) -> None:
         """家里电脑交上来的歌，主人已经不在了（服务重启过）——补发出去。"""
+        if job_id and not self.jobs.begin_delivery(job_id):
+            log.info("任务 %s 已经进入交付或结束状态，跳过重复补发", job_id)
+            return
+        delivered = False
         try:
             data = base64.b64decode(result.get("audio") or "")
             if not data:
+                if job_id:
+                    self.jobs.mark_unknown(job_id, "orphan_audio_empty")
                 return
             ext = str(result.get("ext") or "mp3")
             folder = config.DATA_DIR / "singing"
@@ -3734,6 +3821,7 @@ class WhaleBot:
             for cid in config.OWNER_QQS:
                 if not await self._send_audio(path, "private", int(cid), None):
                     continue
+                delivered = True
                 self._mark_action(f"u{cid}", "sing")
                 await self.send(
                     "private",
@@ -3771,8 +3859,15 @@ class WhaleBot:
 
             log.info("补发了一首：%s（第 %d/%d 段，续播已就绪）",
                      title, int(result.get("index") or 0) + 1, int(result.get("total") or 1))
+            if job_id:
+                if delivered:
+                    self.jobs.mark_consumed(job_id)
+                else:
+                    self.jobs.mark_unknown(job_id, "orphan_delivery_unconfirmed")
         except Exception as exc:
             log.warning("补发失败：%s", exc)
+            if job_id:
+                self.jobs.mark_unknown(job_id, f"orphan_delivery_error:{type(exc).__name__}")
 
     def _introspect(self, topic: str, cid: str) -> str:
         """查自己服务器里的东西。只读，不动任何数据。"""
@@ -4068,7 +4163,8 @@ class WhaleBot:
             started = time.time()
             try:
                 result = await self._ask_home(
-                "sing", query, timeout=config.SING_TIMEOUT, segment=index
+                "sing", query, timeout=config.SING_TIMEOUT,
+                segment=index, cid=cid,
                 )
             finally:
                 self._sing_inflight = max(0, self._sing_inflight - 1)
@@ -4415,7 +4511,7 @@ class WhaleBot:
         key = _owner_key(cid)
         # 一进来就上锁：挑视频还要几秒，这期间她绝不能编"我看完了"
         self._watching[key] = True
-        payload = await self._ask_home("trending", "")
+        payload = await self._ask_home("trending", "", cid=cid)
         items = (payload or {}).get("items") if isinstance(payload, dict) else None
         if not items:
             self._watching.pop(key, None)
@@ -4794,7 +4890,10 @@ class WhaleBot:
             ask = "（到点了，这是你们约好的消息。直接说，一两行就够。）"
             if note:
                 ask += f"（内容大意：{note}）"
-            msgs = self.build_messages(cid, ask, False, [], None)
+            recalled = await self._neuron_recall_async(cid, note or ask)
+            msgs = self.build_messages(
+                cid, ask, False, [], None, recalled=recalled
+            )
             msgs.append({"role": "system", "content": (
                 "（这条是你们约好的定时消息。别提系统、别提定时器、"
                 "别说「我按时给你发了」「我醒着呢」这类解释，就像正常开口说话。）"
@@ -4930,8 +5029,58 @@ class WhaleBot:
         log.info("[%s] 审核 %s -> %s", cid, path.name, "通过" if ok else "丢掉")
         return ok
 
+    async def _prepare_worker_job(self, job: dict) -> dict:
+        """Inject short-lived credentials only when a worker claims the job."""
+        prepared = dict(job)
+        if prepared.get("kind") == "video":
+            try:
+                prepared["asr_token"] = await asyncio.to_thread(
+                    voice._aliyun_token
+                )
+                prepared["asr_appkey"] = config.ALIYUN_APPKEY
+                prepared["asr_minutes"] = config.VIDEO_ASR_MINUTES
+            except Exception as exc:
+                log.warning("拿 ASR token 失败，这次不转写：%s", exc)
+        return prepared
+
+    def _recover_durable_jobs(self) -> None:
+        """Recover expired leases and re-deliver orphaned audio results."""
+        try:
+            released = self.jobs.recover_expired()
+            if released:
+                log.warning("恢复了 %d 个过期家庭任务租约", released)
+            ready = self.jobs.result_ready(limit=50)
+            for item in ready:
+                result = item.get("result")
+                if isinstance(result, dict) and result.get("audio"):
+                    self._spawn(
+                        self._deliver_orphan_song(
+                            result, job_id=str(item.get("id") or "")
+                        )
+                    )
+                else:
+                    log.info(
+                        "家庭任务 %s 已有结果，但原等待者不在，保留在任务台账",
+                        item.get("id"),
+                    )
+            pruned_jobs = self.jobs.prune(config.JOB_RETENTION_DAYS)
+            pruned_actions = self.action_store.prune()
+            if pruned_jobs or pruned_actions:
+                log.info(
+                    "清理旧任务：jobs=%d actions=%d",
+                    pruned_jobs,
+                    pruned_actions,
+                )
+        except Exception as exc:
+            log.warning("恢复持久化任务失败：%s", exc)
+
     async def _ask_home(
-        self, kind: str, url: str, timeout: int = 0, segment: int = 0
+        self,
+        kind: str,
+        url: str,
+        timeout: int = 0,
+        segment: int = 0,
+        cid: str = "",
     ) -> str | None:
         """把活派给家里的电脑，等它回来。
 
@@ -4940,27 +5089,16 @@ class WhaleBot:
         """
         if not (config.HOME_BRIDGE_ENABLED and config.HOME_TOKEN):
             return None
-        if JOBS is None:
-            return None
 
         job_id = uuid.uuid4().hex
         future: asyncio.Future = asyncio.get_running_loop().create_future()
-        PENDING[job_id] = future
+        self._job_waiters[job_id] = future
         job = {"id": job_id, "kind": kind, "url": url}
         if kind == "sing":
             job["query"] = url
             job["segment"] = int(segment)
             job["seconds"] = config.SING_SECONDS
-        if kind == "video":
-            # 语音识别的 token 在服务器这边换（SDK 和密钥都在这儿），
-            # 随任务下发，家里那台就不用装阿里云 SDK
-            try:
-                job["asr_token"] = await asyncio.to_thread(voice._aliyun_token)
-                job["asr_appkey"] = config.ALIYUN_APPKEY
-                job["asr_minutes"] = config.VIDEO_ASR_MINUTES
-            except Exception as exc:
-                log.warning("拿 ASR token 失败，这次不转写：%s", exc)
-        await JOBS.put(job)
+        self.jobs.enqueue(job, conversation_id=cid)
         log.info("[家里电脑] 派活 %s：%s", kind, url[:70])
 
         try:
@@ -4968,15 +5106,16 @@ class WhaleBot:
                 future, timeout or config.HOME_TIMEOUT
             )
         except asyncio.TimeoutError:
-            PENDING.pop(job_id, None)
+            self._job_waiters.pop(job_id, None)
             log.info("[家里电脑] 超时没回话，退回直连")
             return None
         except Exception as exc:
-            PENDING.pop(job_id, None)
+            self._job_waiters.pop(job_id, None)
             log.warning("[家里电脑] 出错：%s", exc)
             return None
 
-        PENDING.pop(job_id, None)
+        self._job_waiters.pop(job_id, None)
+        self.jobs.mark_consumed(job_id)
         if result:
             log.info("[家里电脑] 拿到了 %d 字", len(str(result)))
         return result
@@ -4996,7 +5135,7 @@ class WhaleBot:
         for url in urls:
             # B站/抖音 先让家里电脑去读（机房 IP 会被拦）
             if any(h in url for h in ("bilibili.com", "b23.tv", "douyin.com")):
-                home_text = await self._ask_home("page", url)
+                home_text = await self._ask_home("page", url, cid=cid)
                 if home_text:
                     parts.append(home_text[: config.READING_MAX_CHARS])
                     continue
@@ -5027,7 +5166,7 @@ class WhaleBot:
         """
         key = _owner_key(cid)
         self._watching[key] = True
-        payload = await self._ask_home("video", url)
+        payload = await self._ask_home("video", url, cid=cid)
         if not isinstance(payload, dict):
             self._watching.pop(key, None)
             await self.send(
@@ -5119,6 +5258,9 @@ class WhaleBot:
                     + "说说你看到了、听到了什么，像刚看完一样随口讲两句。）",
                     False,
                     blocks,
+                    recalled=await self._neuron_recall_async(
+                        cid, "（视频画面）"
+                    ),
                 ),
                 model=config.VISION_MODEL,
             )
@@ -5552,7 +5694,9 @@ class WhaleBot:
                 if config.VIDEO_FRAMES_ENABLED and not blocks:
                     video_url = media.find_video_url(user_text)
                     if video_url:
-                        payload = await self._ask_home("page", video_url)
+                        payload = await self._ask_home(
+                            "page", video_url, cid=cid
+                        )
                         if isinstance(payload, str):
                             home_text = payload
                         # 下视频几十秒起步，排到后台，她先正常回话
@@ -5584,10 +5728,16 @@ class WhaleBot:
                         link_context = ""
                 if link_context:
                     enriched = user_text + "\n\n" + link_context
+                recalled = await self._neuron_recall_async(cid, enriched)
 
                 content = await llm.chat(
                     self.build_messages(
-                        cid, enriched, voice_mode, blocks, video_note
+                        cid,
+                        enriched,
+                        voice_mode,
+                        blocks,
+                        video_note,
+                        recalled=recalled,
                     ),
                     model=config.VISION_MODEL if blocks else None,
                 )
@@ -5631,7 +5781,12 @@ class WhaleBot:
                             )
                             content = await llm.chat(
                                 self.build_messages(
-                                    cid, enriched, voice_mode, blocks, context
+                                    cid,
+                                    enriched,
+                                    voice_mode,
+                                    blocks,
+                                    context,
+                                    recalled=recalled,
                                 ),
                                 model=config.VISION_MODEL if blocks else None,
                             )
@@ -5725,7 +5880,14 @@ class WhaleBot:
                         log.info("[%s] 主动开口踩到话题禁区「%s」，这次不发了", cid, hit)
                         return
                     log.info("[%s] 回复踩到话题禁区「%s」，让她换个说法", cid, hit)
-                    retry = self.build_messages(cid, user_text, voice_mode, blocks, video_note)
+                    retry = self.build_messages(
+                        cid,
+                        user_text,
+                        voice_mode,
+                        blocks,
+                        video_note,
+                        recalled=recalled,
+                    )
                     retry.append({"role": "system", "content": (
                         f"（换个说法重说一遍。刚才那句提到了「{hit}」，"
                         "他不想聊这个，别再碰，也别提自己刚才说过什么。）"
@@ -5882,8 +6044,9 @@ class WhaleBot:
                 results = await self._dispatch_actions(
                     pre_actions, action_context
                 )
-                if any(
-                    result.get("status") in ("success", "skipped")
+                if results and all(
+                    bool(result.get("delivered"))
+                    and result.get("delivery_status") == "delivered"
                     for result in results
                 ):
                     return
@@ -6315,7 +6478,7 @@ async def _status_page(request: web.Request) -> web.Response:
 def _check_home_token(request) -> bool:
     if not config.HOME_TOKEN:
         return False
-    given = request.headers.get("X-Home-Token") or request.query.get("token", "")
+    given = request.headers.get("X-Home-Token") or ""
     return given == config.HOME_TOKEN
 
 
@@ -6332,12 +6495,17 @@ async def _jobs_poll(request: web.Request) -> web.Response:
     except (TypeError, ValueError):
         pass
 
-    if JOBS is None:
-        return web.json_response({"job": None})
-    try:
-        job = await asyncio.wait_for(JOBS.get(), timeout=1.0)
-    except asyncio.TimeoutError:
-        return web.json_response({"job": None})
+    bot: WhaleBot = request.app["bot"]
+    deadline = asyncio.get_running_loop().time() + 1.0
+    job = None
+    while True:
+        job = bot.jobs.claim_next(config.JOB_LEASE_SECONDS)
+        if job is not None:
+            job = await bot._prepare_worker_job(job)
+            break
+        if asyncio.get_running_loop().time() >= deadline:
+            break
+        await asyncio.sleep(0.2)
     return web.json_response({"job": job})
 
 
@@ -6350,30 +6518,40 @@ async def _jobs_result(request: web.Request) -> web.Response:
     except ValueError:
         return web.json_response({"error": "bad json"}, status=400)
 
-    job_id = data.get("id")
+    job_id = str(data.get("id") or "")
     result = data.get("result")
+    if not job_id:
+        return web.json_response({"error": "missing job id"}, status=400)
 
-    # 幂等：家里那边交作业失败会重试，同一条可能来两次，别重复投递
-    delivered = request.app.setdefault("delivered", set())
-    if job_id in delivered:
+    bot: WhaleBot = request.app["bot"]
+    inserted = bot.jobs.save_result(job_id, result)
+    if not inserted:
         log.info("作业 %s 已经处理过，忽略重复提交", job_id)
         return web.json_response({"ok": True, "dup": True})
+    job_record = bot.jobs.get(job_id)
+    if job_record.get("status") != "result_ready":
+        log.warning(
+            "作业 %s 结果未进入可交付状态：%s",
+            job_id,
+            job_record.get("error_code"),
+        )
+        return web.json_response(
+            {
+                "ok": False,
+                "error": job_record.get("error_code") or "result_rejected",
+            }
+        )
 
-    future = PENDING.get(job_id)
+    future = bot._job_waiters.get(job_id)
     if future is not None and not future.done():
         future.set_result(result)
-        delivered.add(job_id)
-        if len(delivered) > 500:
-            delivered.clear()
         return web.json_response({"ok": True})
 
     # 没人认领：多半是服务重启过，等活的那个任务已经被清掉了。
     # 结果里要是有音频就别白扔，直接补发给主人（踩过：重启一次丢一首歌）
-    bot: WhaleBot = request.app["bot"]
     if isinstance(result, dict) and result.get("audio"):
         log.info("收到一份没人认领的成品，直接补发")
-        delivered.add(job_id)
-        bot._spawn(bot._deliver_orphan_song(result))
+        bot._spawn(bot._deliver_orphan_song(result, job_id=job_id))
     return web.json_response({"ok": True})
 
 
@@ -6421,9 +6599,6 @@ async def _songs_index(request: web.Request) -> web.Response:
 
 
 def build_app(bot: WhaleBot) -> web.Application:
-    global JOBS
-    JOBS = asyncio.Queue()
-
     # 默认上限只有 1MB，而一首 60 秒的翻唱 mp3 转成 base64 就有 1.2MB，
     # 家里电脑交作业时会直接 413。放开到 64MB（隧道里自己的数据，不怕）。
     app = web.Application(client_max_size=64 * 1024 * 1024)
@@ -6431,7 +6606,16 @@ def build_app(bot: WhaleBot) -> web.Application:
     app.router.add_post("/", bot.on_event)
     app.router.add_post("/onebot", bot.on_event)
     app.router.add_get("/", lambda r: web.json_response({"alive": True, "model": config.MODEL}))
-    app.router.add_get("/health", lambda r: web.json_response({"ok": True}))
+    app.router.add_get(
+        "/health",
+        lambda r: web.json_response(
+            {
+                "ok": True,
+                "jobs": r.app["bot"].jobs.stats(),
+                "actions": r.app["bot"].action_store.stats(),
+            }
+        ),
+    )
     app.router.add_get("/status", _status_page)
     app.router.add_post("/songs/upload", _songs_upload)
     app.router.add_get("/songs/index", _songs_index)
@@ -6460,6 +6644,7 @@ async def _on_startup(app: web.Application) -> None:
     bot._spawn(bot._mail_trigger_loop())
     # 每天自己发几条说说
     bot._spawn(bot._qzone_loop())
+    bot._recover_durable_jobs()
     if config.MOCK_LLM:
         log.info("MOCK_LLM 已开启：不会真正调用模型")
         return
@@ -6473,7 +6658,10 @@ async def _on_startup(app: web.Application) -> None:
 
 
 async def _on_cleanup(app: web.Application) -> None:
-    await app["bot"].ob.close()
+    bot: WhaleBot = app["bot"]
+    await bot.ob.close()
+    bot.action_store.close()
+    bot.jobs.close()
     await llm.close()
     await media.close()
 

@@ -38,6 +38,12 @@
 | `ACTIONS_V2` | | 轻量工具运行时开关，默认关闭 |
 | `ACTION_TRACE_ENABLED` | | 是否记录脱敏动作 trace，默认开启 |
 | `ACTION_TRACE_FILE` | | trace 文件名，默认 `action_trace.jsonl` |
+| `RUNTIME_DB_FILE` | | 动作台账文件名，默认 `runtime.db` |
+| `JOB_DB_FILE` | | 家庭任务台账文件名，默认 `jobs.db` |
+| `JOB_LEASE_SECONDS` | | Worker 领取任务后的租约秒数，默认 1800 |
+| `JOB_MAX_ATTEMPTS` | | 单任务最大领取次数，默认 3 |
+| `JOB_RETENTION_DAYS` | | 已结束任务保留天数，默认 7 |
+| `JOB_RESULT_MAX_BYTES` | | 单任务结果最大字节数，默认 16MB |
 | `SMTP_*` | | 掉线邮件通知（可选） |
 | `TOPIC_RESET_MIN` | | 隔多久换话题，默认 45 |
 | `FRIEND_SILENT_STOP_DAYS` | | 朋友几天没回就静音，默认 5 |
@@ -157,6 +163,9 @@ python selfcheck.py
 
 # 36 条合成 Agent 动作回放
 python tools/action_replay.py
+
+# 记忆隔离、动作失败重试、任务租约和异步 Embedding
+python tools/reliability_check.py
 ```
 
 ---
@@ -172,6 +181,7 @@ tar czf whale-data-$(date +%F).tar.gz data/
 **恢复**：停服务 → 覆盖 `data/` → 起服务。
 
 注意 `data/neuron.db` 是 sqlite，**先停服务再拷**，否则可能拷到写了一半的库。
+`data/runtime.db` 和 `data/jobs.db` 同样是 SQLite，也必须停服务后一起备份。
 
 ---
 
