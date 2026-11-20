@@ -186,6 +186,7 @@ python tools\whale-relay.py
 ## 文档
 
 - [交接总览](docs/HANDOVER.md)
+- [完整项目总结](docs/PROJECT-COMPLETE-SUMMARY.md)
 - [系统架构](docs/ARCHITECTURE.md)
 - [数据模型](docs/DATA-MODEL.md)
 - [运维手册](docs/OPERATIONS.md)
