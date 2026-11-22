@@ -37,3 +37,6 @@ memory-graph.html
 Thumbs.db
 .vscode/
 .idea/
+
+# 未修复漏洞的审计报告：修完前不进公开仓库
+docs/AUDIT-*.md
